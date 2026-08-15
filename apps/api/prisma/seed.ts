@@ -24,6 +24,55 @@ async function main() {
     include: { channel: true },
   });
 
+  const demoUsers = await Promise.all(
+    [
+      {
+        email: 'alice@example.test',
+        username: 'alice',
+        handle: 'alice',
+        name: 'Alice Builds',
+      },
+      {
+        email: 'bob@example.test',
+        username: 'bob',
+        handle: 'bob',
+        name: 'Bob Explains',
+      },
+    ].map((demo) =>
+      prisma.user.upsert({
+        where: { email: demo.email },
+        update: { passwordHash },
+        create: {
+          email: demo.email,
+          username: demo.username,
+          passwordHash,
+          channel: {
+            create: {
+              handle: demo.handle,
+              name: demo.name,
+              description: `Demo channel for ${demo.name}`,
+            },
+          },
+        },
+        include: { channel: true },
+      }),
+    ),
+  );
+  for (const demo of demoUsers) {
+    if (demo.channel) {
+      await prisma.subscription.upsert({
+        where: {
+          subscriberId_channelId: {
+            subscriberId: user.id,
+            channelId: demo.channel.id,
+          },
+        },
+        create: { subscriberId: user.id, channelId: demo.channel.id },
+        update: {},
+      });
+    }
+  }
+
   console.log(
     JSON.stringify({
       event: 'development.seed.completed',

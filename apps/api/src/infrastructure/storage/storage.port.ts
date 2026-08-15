@@ -22,4 +22,6 @@ export interface ObjectStorage {
   createUploadUrl(input: CreateUploadUrlInput): Promise<string>;
   headObject(bucket: string, objectKey: string): Promise<StoredObjectMetadata>;
   getObject(bucket: string, objectKey: string): Promise<StoredObject>;
+  deleteObject(bucket: string, objectKey: string): Promise<void>;
+  deletePrefix(bucket: string, prefix: string): Promise<void>;
 }

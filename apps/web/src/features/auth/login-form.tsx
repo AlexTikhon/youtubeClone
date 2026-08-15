@@ -8,7 +8,7 @@ import type { AuthenticatedUserResponse } from '@youtube-clone/types';
 
 import { apiRequest } from '@/shared/api/api-client';
 
-export function LoginForm() {
+export function LoginForm({ next }: { next?: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState('developer@example.test');
@@ -20,8 +20,9 @@ export function LoginForm() {
         body: { email, password },
       }),
     onSuccess: (user) => {
+      queryClient.clear();
       queryClient.setQueryData(['auth', 'me'], user);
-      router.push('/studio/upload');
+      router.push(next?.startsWith('/') && !next.startsWith('//') ? next : '/');
     },
   });
   const submit = (event: FormEvent) => {

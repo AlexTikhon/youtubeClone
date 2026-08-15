@@ -30,8 +30,24 @@ export class VideoProcessingPipeline {
         assets: { where: { id: input.originalAssetId, kind: 'ORIGINAL' } },
       },
     });
-    if (!video || video.assets.length !== 1)
-      throw new Error('Video or original asset was not found');
+    if (!video) {
+      this.logger.log({
+        event: 'video.processing.deleted_skipped',
+        videoId: input.videoId,
+        jobId,
+      });
+      return;
+    }
+    if (video.status === 'DELETING') {
+      this.logger.log({
+        event: 'video.processing.deletion_skipped',
+        videoId: input.videoId,
+        jobId,
+      });
+      return;
+    }
+    if (video.assets.length !== 1)
+      throw new Error('Original asset was not found');
     if (video.status === 'READY') {
       this.logger.log({
         event: 'video.processing.duplicate_skipped',
@@ -77,6 +93,17 @@ export class VideoProcessingPipeline {
         hlsDirectory,
         metadata,
       );
+      const stillProcessable = await this.database.video.count({
+        where: { id: video.id, status: 'PROCESSING' },
+      });
+      if (stillProcessable !== 1) {
+        this.logger.log({
+          event: 'video.processing.cancelled_before_upload',
+          videoId: input.videoId,
+          jobId,
+        });
+        return;
+      }
       const thumbnail = await this.storage.uploadThumbnail(
         video.id,
         thumbnailPath,
@@ -189,6 +216,21 @@ export class VideoProcessingPipeline {
         width: rendition.width,
         height: rendition.height,
       });
+    } catch (error) {
+      const current = await this.database.video.findUnique({
+        where: { id: video.id },
+        select: { status: true },
+      });
+      if (!current || current.status === 'DELETING') {
+        await this.storage.removeGenerated(video.id).catch(() => undefined);
+        this.logger.log({
+          event: 'video.processing.cancelled_after_upload',
+          videoId: input.videoId,
+          jobId,
+        });
+        return;
+      }
+      throw error;
     } finally {
       await rm(workDirectory, { recursive: true, force: true });
     }

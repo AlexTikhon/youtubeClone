@@ -1,25 +1,20 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 
-import type { AuthenticatedUserResponse } from '@youtube-clone/types';
-
 import { apiRequest } from '@/shared/api/api-client';
+import { useCurrentUser } from '@/shared/query/use-current-user';
 
 export function AuthStatus() {
   const queryClient = useQueryClient();
-  const user = useQuery({
-    queryKey: ['auth', 'me'],
-    queryFn: () => apiRequest<AuthenticatedUserResponse>('/api/v1/auth/me'),
-    retry: false,
-  });
+  const user = useCurrentUser();
   const logout = useMutation({
     mutationFn: () =>
       apiRequest<{ success: true }>('/api/v1/auth/logout', { method: 'POST' }),
-    onSettled: async () => {
+    onSettled: () => {
+      queryClient.clear();
       queryClient.setQueryData(['auth', 'me'], null);
-      await queryClient.invalidateQueries({ queryKey: ['auth'] });
     },
   });
   if (!user.data)

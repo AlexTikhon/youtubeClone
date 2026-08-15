@@ -1,6 +1,9 @@
 import {
   GetObjectCommand,
   HeadObjectCommand,
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -74,5 +77,37 @@ export class S3StorageAdapter implements ObjectStorage {
       contentType: result.ContentType ?? 'application/octet-stream',
       sizeBytes: result.ContentLength ?? null,
     };
+  }
+
+  async deleteObject(bucket: string, objectKey: string): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }),
+    );
+  }
+
+  async deletePrefix(bucket: string, prefix: string): Promise<void> {
+    let continuationToken: string | undefined;
+    do {
+      const page = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }),
+      );
+      const objects =
+        page.Contents?.flatMap((item) =>
+          item.Key ? [{ Key: item.Key }] : [],
+        ) ?? [];
+      if (objects.length) {
+        await this.client.send(
+          new DeleteObjectsCommand({
+            Bucket: bucket,
+            Delete: { Objects: objects, Quiet: true },
+          }),
+        );
+      }
+      continuationToken = page.NextContinuationToken;
+    } while (continuationToken);
   }
 }

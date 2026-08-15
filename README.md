@@ -1,8 +1,8 @@
 # YouTubeClone
 
-An educational, production-minded video platform. Phase 1 implements the first complete vertical
-slice: browser login, direct upload to MinIO, asynchronous FFmpeg processing, publishing, discovery,
-and HLS playback.
+An educational, production-minded video platform. Phase 1 provides the real direct-upload/FFmpeg/HLS
+pipeline. Phase 2 adds channels, likes, comments, subscriptions, qualified views, watch history,
+ranked discovery, subscription feeds, and creator Studio without replacing those foundations.
 
 ## Prerequisites
 
@@ -50,9 +50,10 @@ defaults to one because transcoding is CPU- and memory-heavy.
 login -> create owned draft -> signed PUT -> MinIO original -> complete
       -> BullMQ -> ffprobe -> thumbnail + 720p-bounded HLS -> READY
       -> public home card -> watch page -> native HLS / hls.js
+      -> qualified view + progress -> like/comment/subscribe -> history/feed
 ```
 
-Only MP4 uploads are accepted in Phase 1, with a 2 GB default limit. The browser MIME/size checks are
+Only MP4 uploads are accepted, with a 2 GB default limit. The browser MIME/size checks are
 for feedback; the API verifies the stored object and the worker treats ffprobe as authoritative.
 
 ## Commands
@@ -73,5 +74,5 @@ $env:RUN_INTEGRATION_TESTS='true'; pnpm --filter @youtube-clone/api test:integra
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/VIDEO_PIPELINE.md](docs/VIDEO_PIPELINE.md),
-and [docs/DECISIONS.md](docs/DECISIONS.md) for boundaries, retry behavior, object layout, and Phase 1
-trade-offs.
+and [docs/DECISIONS.md](docs/DECISIONS.md) for boundaries, retry behavior, pagination, ranking,
+view/history policy, and deletion concurrency trade-offs.

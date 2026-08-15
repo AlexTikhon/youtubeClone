@@ -1,15 +1,70 @@
-import { Inject, Injectable } from '@nestjs/common';
-import type { PublicVideoSummary, VideoSummary } from '@youtube-clone/types';
-import type { CreateVideoInput } from '@youtube-clone/validation';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import type {
+  OwnerVideoDto,
+  VideoCardDto,
+  WatchVideoDto,
+} from '@youtube-clone/types';
+import type {
+  CreateVideoInput,
+  UpdateVideoInput,
+} from '@youtube-clone/validation';
+import type { ApiEnvironment } from '@youtube-clone/config';
+import type { Prisma } from '@prisma/client';
 
-import { AppError } from '../infrastructure/http/app-error.js';
+import { API_ENVIRONMENT } from '../config/config.module.js';
 import { PrismaService } from '../infrastructure/database/prisma.service.js';
+import { AppError } from '../infrastructure/http/app-error.js';
+import { decodeCursor, encodeCursor } from '../infrastructure/http/cursor.js';
+import {
+  OBJECT_STORAGE,
+  type ObjectStorage,
+} from '../infrastructure/storage/storage.port.js';
+import { assertVideoTransition } from './domain/video-state-machine.js';
+
+interface DateIdCursor {
+  date: string;
+  id: string;
+}
+
+const OWNER_INCLUDE = {
+  channel: { select: { name: true, handle: true } },
+  assets: {
+    where: { kind: { in: ['THUMBNAIL', 'HLS_MANIFEST'] } },
+    select: { kind: true },
+  },
+  _count: { select: { views: true, likes: true, comments: true } },
+} satisfies Prisma.VideoInclude;
+type OwnerVideoRecord = Prisma.VideoGetPayload<{
+  include: typeof OWNER_INCLUDE;
+}>;
+interface CardVideoRecord {
+  id: string;
+  title: string;
+  durationSeconds: number | null;
+  publishedAt: Date | null;
+  channel: {
+    id: string;
+    name: string;
+    handle: string;
+    avatarUrl: string | null;
+  };
+  _count: { views: number };
+}
 
 @Injectable()
 export class VideosService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(VideosService.name);
 
-  async create(ownerId: string, input: CreateVideoInput) {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage,
+    @Inject(API_ENVIRONMENT) private readonly environment: ApiEnvironment,
+  ) {}
+
+  async create(
+    ownerId: string,
+    input: CreateVideoInput,
+  ): Promise<OwnerVideoDto> {
     const channel = await this.prisma.channel.findUnique({
       where: { ownerId },
       select: { id: true },
@@ -23,9 +78,9 @@ export class VideosService {
         description: input.description,
         visibility: input.visibility,
       },
-      include: { channel: { select: { name: true, handle: true } } },
+      include: OWNER_INCLUDE,
     });
-    return this.toSummary(video, []);
+    return this.toOwnerDto(video);
   }
 
   async findOwned(videoId: string, ownerId: string) {
@@ -38,27 +93,210 @@ export class VideosService {
     return video;
   }
 
-  async getVisible(videoId: string, ownerId?: string): Promise<VideoSummary> {
+  async getOwned(videoId: string, ownerId: string): Promise<OwnerVideoDto> {
+    const video = await this.prisma.video.findFirst({
+      where: { id: videoId, channel: { ownerId } },
+      include: OWNER_INCLUDE,
+    });
+    if (!video)
+      throw new AppError('VIDEO_NOT_FOUND', 'Video was not found', 404);
+    return this.toOwnerDto(video);
+  }
+
+  async listOwned(ownerId: string, cursor: string | undefined, limit: number) {
+    const after = cursor ? decodeCursor<DateIdCursor>(cursor) : undefined;
+    const videos = await this.prisma.video.findMany({
+      where: {
+        channel: { ownerId },
+        ...(after
+          ? {
+              OR: [
+                { createdAt: { lt: new Date(after.date) } },
+                { createdAt: new Date(after.date), id: { lt: after.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      include: OWNER_INCLUDE,
+    });
+    const hasMore = videos.length > limit;
+    const data = videos.slice(0, limit).map((video) => this.toOwnerDto(video));
+    const last = data.at(-1);
+    return {
+      data,
+      page: {
+        hasMore,
+        nextCursor:
+          hasMore && last
+            ? encodeCursor({ date: last.createdAt, id: last.id })
+            : null,
+      },
+    };
+  }
+
+  async getWatch(videoId: string, userId?: string): Promise<WatchVideoDto> {
     const video = await this.prisma.video.findUnique({
       where: { id: videoId },
       include: {
-        channel: { select: { name: true, handle: true, ownerId: true } },
-        assets: {
-          where: { kind: { in: ['THUMBNAIL', 'HLS_MANIFEST'] } },
-          select: { kind: true },
-        },
+        channel: { include: { _count: { select: { subscriptions: true } } } },
+        assets: { where: { kind: 'HLS_MANIFEST' }, select: { id: true } },
+        _count: { select: { likes: true, views: true, comments: true } },
+        ...(userId
+          ? {
+              likes: { where: { userId }, select: { userId: true } },
+              watchHistory: {
+                where: { userId },
+                select: { lastPositionSeconds: true },
+              },
+            }
+          : {}),
       },
     });
-    const owned = video?.channel.ownerId === ownerId;
-    const externallyVisible =
+    const owned = video?.channel.ownerId === userId;
+    const visible =
       video?.status === 'READY' &&
-      (video.visibility === 'PUBLIC' || video.visibility === 'UNLISTED');
-    if (!video || (!owned && !externallyVisible))
+      (owned ||
+        video.visibility === 'PUBLIC' ||
+        video.visibility === 'UNLISTED');
+    if (
+      !video ||
+      !visible ||
+      video.assets.length === 0 ||
+      video.durationSeconds === null
+    )
       throw new AppError('VIDEO_NOT_FOUND', 'Video was not found', 404);
-    return this.toSummary(video, video.assets);
+    const subscribed = userId
+      ? await this.prisma.subscription.findUnique({
+          where: {
+            subscriberId_channelId: {
+              subscriberId: userId,
+              channelId: video.channelId,
+            },
+          },
+          select: { subscriberId: true },
+        })
+      : null;
+    const history = 'watchHistory' in video ? video.watchHistory[0] : undefined;
+    const position = history?.lastPositionSeconds;
+    return {
+      id: video.id,
+      title: video.title,
+      description: video.description,
+      durationSeconds: video.durationSeconds,
+      playbackUrl: `/api/v1/media/videos/${video.id}/hls/720p/index.m3u8`,
+      publishedAt: video.publishedAt?.toISOString() ?? null,
+      viewsCount: video._count.views,
+      likesCount: video._count.likes,
+      commentsCount: video._count.comments,
+      likedByCurrentUser: 'likes' in video && video.likes.length > 0,
+      channel: {
+        id: video.channel.id,
+        handle: video.channel.handle,
+        name: video.channel.name,
+        avatarUrl: video.channel.avatarUrl,
+        subscribersCount: video.channel._count.subscriptions,
+        subscribedByCurrentUser: Boolean(subscribed),
+      },
+      resumePositionSeconds:
+        position !== undefined &&
+        position > 5 &&
+        position < video.durationSeconds - 10
+          ? position
+          : null,
+    };
   }
 
-  async listPublic(): Promise<PublicVideoSummary[]> {
+  async update(
+    videoId: string,
+    ownerId: string,
+    input: UpdateVideoInput,
+  ): Promise<OwnerVideoDto> {
+    const current = await this.findOwned(videoId, ownerId);
+    if (current.status === 'DELETING')
+      throw new AppError('VIDEO_STATE_CONFLICT', 'Video is being deleted', 409);
+    const nextVisibility = input.visibility ?? current.visibility;
+    const publishedAt =
+      current.status === 'READY' && nextVisibility === 'PUBLIC'
+        ? (current.publishedAt ?? new Date())
+        : current.publishedAt;
+    const video = await this.prisma.video.update({
+      where: { id: videoId },
+      data: {
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.description === undefined
+          ? {}
+          : { description: input.description }),
+        ...(input.visibility === undefined
+          ? {}
+          : { visibility: input.visibility, publishedAt }),
+      },
+      include: OWNER_INCLUDE,
+    });
+    return this.toOwnerDto(video);
+  }
+
+  async delete(videoId: string, ownerId: string): Promise<{ deleted: true }> {
+    const video = await this.prisma.video.findFirst({
+      where: { id: videoId, channel: { ownerId } },
+      include: {
+        assets: {
+          where: { kind: 'ORIGINAL' },
+          select: { bucket: true, objectKey: true },
+        },
+        upload: { select: { bucket: true, objectKey: true } },
+      },
+    });
+    if (!video)
+      throw new AppError('VIDEO_NOT_FOUND', 'Video was not found', 404);
+    if (video.status !== 'DELETING') {
+      assertVideoTransition(video.status, 'DELETING');
+      const claimed = await this.prisma.video.updateMany({
+        where: { id: video.id, status: video.status },
+        data: { status: 'DELETING' },
+      });
+      if (claimed.count !== 1)
+        throw new AppError('VIDEO_STATE_CONFLICT', 'Video state changed', 409);
+    }
+    try {
+      const originals = new Map<
+        string,
+        { bucket: string; objectKey: string }
+      >();
+      for (const object of [
+        ...video.assets,
+        ...(video.upload ? [video.upload] : []),
+      ])
+        originals.set(`${object.bucket}/${object.objectKey}`, object);
+      await Promise.all([
+        ...[...originals.values()].map((object) =>
+          this.storage.deleteObject(object.bucket, object.objectKey),
+        ),
+        this.storage.deletePrefix(
+          this.environment.S3_BUCKET_STREAMS,
+          `videos/${video.id}/hls/`,
+        ),
+        this.storage.deletePrefix(
+          this.environment.S3_BUCKET_THUMBNAILS,
+          `videos/${video.id}/thumbnail/`,
+        ),
+      ]);
+      await this.prisma.video.delete({ where: { id: video.id } });
+      this.logger.log({ event: 'video.deleted', videoId, ownerId });
+      return { deleted: true };
+    } catch (error) {
+      throw new AppError(
+        'VIDEO_DELETE_FAILED',
+        'Deletion is pending because media cleanup failed. Retry the deletion.',
+        503,
+        error instanceof Error ? error.message : undefined,
+      );
+    }
+  }
+
+  async listPublic(cursor: string | undefined, limit: number) {
+    const after = cursor ? decodeCursor<DateIdCursor>(cursor) : undefined;
     const videos = await this.prisma.video.findMany({
       where: {
         status: 'READY',
@@ -67,56 +305,65 @@ export class VideosService {
         durationSeconds: { not: null },
         assets: { some: { kind: 'HLS_MANIFEST' } },
         AND: { assets: { some: { kind: 'THUMBNAIL' } } },
+        ...(after
+          ? {
+              OR: [
+                { publishedAt: { lt: new Date(after.date) } },
+                { publishedAt: new Date(after.date), id: { lt: after.id } },
+              ],
+            }
+          : {}),
       },
-      orderBy: { publishedAt: 'desc' },
-      take: 50,
-      include: { channel: { select: { name: true, handle: true } } },
+      orderBy: [{ publishedAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      include: {
+        channel: {
+          select: { id: true, name: true, handle: true, avatarUrl: true },
+        },
+        _count: { select: { views: true } },
+      },
     });
-    return videos.map((video) => ({
-      id: video.id,
-      title: video.title,
-      durationSeconds: video.durationSeconds!,
-      thumbnailUrl: this.thumbnailUrl(video.id),
-      channel: video.channel,
-      publishedAt: video.publishedAt!.toISOString(),
-    }));
+    const hasMore = videos.length > limit;
+    const data = videos.slice(0, limit).map((video) => this.toCardDto(video));
+    const last = data.at(-1);
+    return {
+      data,
+      page: {
+        hasMore,
+        nextCursor:
+          hasMore && last
+            ? encodeCursor({ date: last.publishedAt, id: last.id })
+            : null,
+      },
+    };
   }
 
-  async assertMediaAccess(videoId: string, ownerId?: string): Promise<void> {
+  async assertWatchAccess(videoId: string, userId?: string) {
     const video = await this.prisma.video.findUnique({
       where: { id: videoId },
       select: {
+        id: true,
         status: true,
         visibility: true,
+        durationSeconds: true,
         channel: { select: { ownerId: true } },
       },
     });
     const canView =
       video?.status === 'READY' &&
-      (video.channel.ownerId === ownerId ||
+      (video.channel.ownerId === userId ||
         video.visibility === 'PUBLIC' ||
         video.visibility === 'UNLISTED');
-    if (!canView)
-      throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);
+    if (!video || !canView)
+      throw new AppError('VIDEO_NOT_FOUND', 'Video was not found', 404);
+    return video;
   }
 
-  private toSummary(
-    video: {
-      id: string;
-      title: string;
-      description: string | null;
-      status: VideoSummary['status'];
-      visibility: VideoSummary['visibility'];
-      durationSeconds: number | null;
-      width: number | null;
-      height: number | null;
-      failureReason: string | null;
-      publishedAt: Date | null;
-      createdAt: Date;
-      channel: { name: string; handle: string };
-    },
-    assets: { kind: string }[],
-  ): VideoSummary {
+  async assertMediaAccess(videoId: string, ownerId?: string): Promise<void> {
+    await this.assertWatchAccess(videoId, ownerId);
+  }
+
+  private toOwnerDto(video: OwnerVideoRecord): OwnerVideoDto {
     return {
       id: video.id,
       title: video.title,
@@ -128,18 +375,35 @@ export class VideosService {
       height: video.height,
       failureReason: video.failureReason,
       channel: video.channel,
-      thumbnailUrl: assets.some((asset) => asset.kind === 'THUMBNAIL')
-        ? this.thumbnailUrl(video.id)
+      thumbnailUrl: video.assets.some(
+        (asset: { kind: string }) => asset.kind === 'THUMBNAIL',
+      )
+        ? `/api/v1/media/videos/${video.id}/thumbnail`
         : null,
-      playbackUrl: assets.some((asset) => asset.kind === 'HLS_MANIFEST')
+      playbackUrl: video.assets.some(
+        (asset: { kind: string }) => asset.kind === 'HLS_MANIFEST',
+      )
         ? `/api/v1/media/videos/${video.id}/hls/720p/index.m3u8`
         : null,
       publishedAt: video.publishedAt?.toISOString() ?? null,
       createdAt: video.createdAt.toISOString(),
+      viewsCount: video._count.views,
+      likesCount: video._count.likes,
+      commentsCount: video._count.comments,
     };
   }
 
-  private thumbnailUrl(videoId: string): string {
-    return `/api/v1/media/videos/${videoId}/thumbnail`;
+  toCardDto(video: CardVideoRecord): VideoCardDto {
+    if (video.durationSeconds === null || video.publishedAt === null)
+      throw new Error('Card read model requires published duration metadata');
+    return {
+      id: video.id,
+      title: video.title,
+      durationSeconds: video.durationSeconds,
+      thumbnailUrl: `/api/v1/media/videos/${video.id}/thumbnail`,
+      viewsCount: video._count.views,
+      channel: video.channel,
+      publishedAt: video.publishedAt.toISOString(),
+    };
   }
 }

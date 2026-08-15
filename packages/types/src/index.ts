@@ -5,6 +5,7 @@ export const VIDEO_STATUSES = [
   'PROCESSING',
   'READY',
   'FAILED',
+  'DELETING',
 ] as const;
 
 export type VideoStatus = (typeof VIDEO_STATUSES)[number];
@@ -12,12 +13,13 @@ export type VideoStatus = (typeof VIDEO_STATUSES)[number];
 const ALLOWED_VIDEO_TRANSITIONS: Readonly<
   Record<VideoStatus, readonly VideoStatus[]>
 > = {
-  DRAFT: ['UPLOADING'],
-  UPLOADING: ['UPLOADED', 'FAILED'],
-  UPLOADED: ['PROCESSING', 'FAILED'],
-  PROCESSING: ['READY', 'FAILED'],
-  READY: ['PROCESSING'],
-  FAILED: ['PROCESSING'],
+  DRAFT: ['UPLOADING', 'DELETING'],
+  UPLOADING: ['UPLOADED', 'FAILED', 'DELETING'],
+  UPLOADED: ['PROCESSING', 'FAILED', 'DELETING'],
+  PROCESSING: ['READY', 'FAILED', 'DELETING'],
+  READY: ['DELETING'],
+  FAILED: ['DELETING'],
+  DELETING: [],
 };
 
 export class InvalidVideoTransitionError extends Error {
@@ -67,7 +69,7 @@ export interface HealthResponse {
   };
 }
 
-export interface VideoSummary {
+export interface OwnerVideoDto {
   id: string;
   title: string;
   description: string | null;
@@ -85,18 +87,87 @@ export interface VideoSummary {
   };
   publishedAt: string | null;
   createdAt: string;
+  viewsCount: number;
+  likesCount: number;
+  commentsCount: number;
 }
 
-export interface PublicVideoSummary {
+export interface VideoCardDto {
   id: string;
   title: string;
   durationSeconds: number;
-  thumbnailUrl: string;
+  thumbnailUrl: string | null;
+  viewsCount: number;
   channel: {
+    id: string;
     name: string;
     handle: string;
+    avatarUrl: string | null;
   };
   publishedAt: string;
+}
+
+/** @deprecated Use the purpose-built owner/card DTOs. */
+export type VideoSummary = OwnerVideoDto;
+/** @deprecated Use VideoCardDto. */
+export type PublicVideoSummary = VideoCardDto;
+
+export interface WatchVideoDto {
+  id: string;
+  title: string;
+  description: string | null;
+  durationSeconds: number;
+  playbackUrl: string;
+  publishedAt: string | null;
+  viewsCount: number;
+  likesCount: number;
+  commentsCount: number;
+  likedByCurrentUser: boolean;
+  channel: {
+    id: string;
+    handle: string;
+    name: string;
+    avatarUrl: string | null;
+    subscribersCount: number;
+    subscribedByCurrentUser: boolean;
+  };
+  resumePositionSeconds: number | null;
+}
+
+export interface CommentDto {
+  id: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+  canDelete: boolean;
+  author: { id: string; username: string; avatarUrl: string | null };
+}
+
+export interface ChannelDto {
+  id: string;
+  handle: string;
+  name: string;
+  description: string | null;
+  avatarUrl: string | null;
+  subscribersCount: number;
+  subscribedByCurrentUser: boolean;
+  ownedByCurrentUser: boolean;
+}
+
+export interface SubscriptionStateDto {
+  subscribed: boolean;
+  subscriberCount: number;
+}
+
+export interface LikeStateDto {
+  liked: boolean;
+  likesCount: number;
+}
+
+export interface HistoryItemDto {
+  video: VideoCardDto;
+  lastPositionSeconds: number;
+  lastWatchedAt: string;
 }
 
 export interface AuthenticatedUserResponse {

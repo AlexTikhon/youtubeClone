@@ -6,7 +6,7 @@ import { useRef, useState, type FormEvent } from 'react';
 
 import type {
   UploadIntentResponse,
-  VideoSummary,
+  OwnerVideoDto,
   VideoVisibility,
 } from '@youtube-clone/types';
 
@@ -44,7 +44,7 @@ export function VideoUploadForm() {
   const video = useQuery({
     queryKey: ['video', context?.videoId],
     queryFn: () =>
-      apiRequest<VideoSummary>(`/api/v1/videos/${context!.videoId}`),
+      apiRequest<OwnerVideoDto>(`/api/v1/videos/${context!.videoId}/owner`),
     enabled: Boolean(context?.videoId),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
@@ -113,7 +113,7 @@ export function VideoUploadForm() {
       setError(null);
       setProgress(0);
       setPhase('creating');
-      const draft = await apiRequest<VideoSummary>('/api/v1/videos', {
+      const draft = await apiRequest<OwnerVideoDto>('/api/v1/videos', {
         method: 'POST',
         body: { title, description, visibility },
       });

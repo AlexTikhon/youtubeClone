@@ -2,6 +2,9 @@ import {
   Body,
   Controller,
   Get,
+  Delete,
+  Patch,
+  Query,
   Inject,
   Param,
   ParseUUIDPipe,
@@ -11,8 +14,16 @@ import {
 } from '@nestjs/common';
 import { ApiBody, ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
-import type { CreateVideoInput } from '@youtube-clone/validation';
-import { createVideoSchema } from '@youtube-clone/validation';
+import type {
+  CreateVideoInput,
+  CursorPaginationInput,
+  UpdateVideoInput,
+} from '@youtube-clone/validation';
+import {
+  createVideoSchema,
+  cursorPaginationSchema,
+  updateVideoSchema,
+} from '@youtube-clone/validation';
 
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/auth.types.js';
@@ -95,8 +106,11 @@ export class VideosController {
   }
 
   @Get()
-  listPublic() {
-    return this.videos.listPublic();
+  listPublic(
+    @Query(new ZodBodyPipe(cursorPaginationSchema))
+    query: CursorPaginationInput,
+  ) {
+    return this.videos.listPublic(query.cursor, query.limit);
   }
 
   @Get(':videoId')
@@ -105,6 +119,34 @@ export class VideosController {
     @Param('videoId', ParseUUIDPipe) videoId: string,
     @Req() request: RequestWithContext,
   ) {
-    return this.videos.getVisible(videoId, request.user?.id);
+    return this.videos.getWatch(videoId, request.user?.id);
+  }
+
+  @Get(':videoId/owner')
+  @UseGuards(SessionGuard)
+  getOwned(
+    @Param('videoId', ParseUUIDPipe) videoId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.videos.getOwned(videoId, user.id);
+  }
+
+  @Patch(':videoId')
+  @UseGuards(SessionGuard)
+  update(
+    @Param('videoId', ParseUUIDPipe) videoId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body(new ZodBodyPipe(updateVideoSchema)) input: UpdateVideoInput,
+  ) {
+    return this.videos.update(videoId, user.id, input);
+  }
+
+  @Delete(':videoId')
+  @UseGuards(SessionGuard)
+  delete(
+    @Param('videoId', ParseUUIDPipe) videoId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.videos.delete(videoId, user.id);
   }
 }

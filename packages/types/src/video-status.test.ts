@@ -11,6 +11,7 @@ describe('video status contract', () => {
       'PROCESSING',
       'READY',
       'FAILED',
+      'DELETING',
     ]);
   });
 });

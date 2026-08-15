@@ -13,9 +13,18 @@ export function AppHeader() {
             </span>
             YouTubeClone
           </Link>
-          <nav className="flex gap-5 text-sm text-zinc-400">
+          <nav className="hidden gap-5 text-sm text-zinc-400 md:flex">
             <Link className="hover:text-white" href="/">
               Home
+            </Link>
+            <Link className="hover:text-white" href="/subscriptions">
+              Subscriptions
+            </Link>
+            <Link className="hover:text-white" href="/history">
+              History
+            </Link>
+            <Link className="hover:text-white" href="/studio">
+              Studio
             </Link>
             <Link className="hover:text-white" href="/studio/upload">
               Upload

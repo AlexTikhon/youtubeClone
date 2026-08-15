@@ -10,5 +10,6 @@ import { VideosService } from './videos.service.js';
   imports: [AuthModule],
   controllers: [VideosController, MediaController],
   providers: [VideosService, UploadsService],
+  exports: [VideosService],
 })
 export class VideosModule {}

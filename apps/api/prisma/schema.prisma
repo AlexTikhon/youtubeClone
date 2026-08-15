@@ -14,6 +14,7 @@ enum VideoStatus {
   PROCESSING
   READY
   FAILED
+  DELETING
 }
 
 enum VideoVisibility {
@@ -44,6 +45,11 @@ model User {
   updatedAt    DateTime      @updatedAt
   channel      Channel?
   authSessions AuthSession[]
+  likes        VideoLike[]
+  comments     Comment[]
+  subscriptions Subscription[] @relation("SubscriberSubscriptions")
+  videoViews   VideoView[]
+  watchHistory WatchHistory[]
 }
 
 model AuthSession {
@@ -71,6 +77,7 @@ model Channel {
   updatedAt   DateTime @updatedAt
   owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   videos      Video[]
+  subscriptions Subscription[]
 }
 
 model Video {
@@ -90,10 +97,76 @@ model Video {
   channel         Channel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
   assets          VideoAsset[]
   upload          VideoUpload?
+  likes           VideoLike[]
+  comments        Comment[]
+  views           VideoView[]
+  watchHistory    WatchHistory[]
 
   @@index([channelId, createdAt(sort: Desc)])
   @@index([status, updatedAt])
-  @@index([visibility, publishedAt(sort: Desc)])
+  @@index([status, visibility, publishedAt(sort: Desc), id(sort: Desc)])
+}
+
+model VideoLike {
+  userId    String   @db.Uuid
+  videoId   String   @db.Uuid
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video     Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@id([userId, videoId])
+  @@index([videoId])
+}
+
+model Comment {
+  id        String   @id @default(uuid()) @db.Uuid
+  videoId   String   @db.Uuid
+  authorId  String   @db.Uuid
+  content   String   @db.VarChar(2000)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  video     Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([authorId])
+}
+
+model Subscription {
+  subscriberId String   @db.Uuid
+  channelId    String   @db.Uuid
+  createdAt    DateTime @default(now())
+  subscriber   User     @relation("SubscriberSubscriptions", fields: [subscriberId], references: [id], onDelete: Cascade)
+  channel      Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@id([subscriberId, channelId])
+  @@index([channelId])
+  @@index([subscriberId, createdAt(sort: Desc)])
+}
+
+model VideoView {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  videoId     String   @db.Uuid
+  windowStart DateTime
+  viewedAt    DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video       Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, videoId, windowStart])
+  @@index([videoId, viewedAt(sort: Desc)])
+}
+
+model WatchHistory {
+  userId              String   @db.Uuid
+  videoId             String   @db.Uuid
+  lastPositionSeconds Int
+  lastWatchedAt       DateTime @default(now())
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video                Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@id([userId, videoId])
+  @@index([userId, lastWatchedAt(sort: Desc), videoId(sort: Desc)])
 }
 
 model VideoUpload {
