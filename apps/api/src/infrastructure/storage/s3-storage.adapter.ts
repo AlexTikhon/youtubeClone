@@ -1,4 +1,5 @@
 import {
+  GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -12,6 +13,7 @@ import { API_ENVIRONMENT } from '../../config/config.module.js';
 import type {
   CreateUploadUrlInput,
   ObjectStorage,
+  StoredObject,
   StoredObjectMetadata,
 } from './storage.port.js';
 
@@ -58,6 +60,19 @@ export class S3StorageAdapter implements ObjectStorage {
         result.ContentLength === undefined
           ? null
           : BigInt(result.ContentLength),
+    };
+  }
+
+  async getObject(bucket: string, objectKey: string): Promise<StoredObject> {
+    const result = await this.client.send(
+      new GetObjectCommand({ Bucket: bucket, Key: objectKey }),
+    );
+    if (!result.Body || !('pipe' in result.Body))
+      throw new Error('Object response is not a Node.js stream');
+    return {
+      body: result.Body as NodeJS.ReadableStream,
+      contentType: result.ContentType ?? 'application/octet-stream',
+      sizeBytes: result.ContentLength ?? null,
     };
   }
 }

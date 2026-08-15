@@ -1,0 +1,13 @@
+import { Injectable } from '@nestjs/common';
+import type { OnApplicationShutdown } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+
+@Injectable()
+export class DatabaseService
+  extends PrismaClient
+  implements OnApplicationShutdown
+{
+  async onApplicationShutdown(): Promise<void> {
+    await this.$disconnect();
+  }
+}

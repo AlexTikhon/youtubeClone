@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Inject,
   Param,
   ParseUUIDPipe,
@@ -16,6 +17,7 @@ import { createVideoSchema } from '@youtube-clone/validation';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/auth.types.js';
 import { SessionGuard } from '../auth/session.guard.js';
+import { OptionalSessionGuard } from '../auth/optional-session.guard.js';
 import type { RequestWithContext } from '../infrastructure/http/request-context.js';
 import { ZodBodyPipe } from '../infrastructure/http/zod-body.pipe.js';
 import {
@@ -26,8 +28,6 @@ import { UploadsService } from '../uploads/uploads.service.js';
 import { VideosService } from './videos.service.js';
 
 @ApiTags('videos')
-@ApiCookieAuth('session')
-@UseGuards(SessionGuard)
 @Controller('videos')
 export class VideosController {
   constructor(
@@ -36,13 +36,14 @@ export class VideosController {
   ) {}
 
   @Post()
+  @ApiCookieAuth('session')
+  @UseGuards(SessionGuard)
   @ApiOperation({ summary: 'Create a private video draft' })
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['channelId', 'title'],
+      required: ['title'],
       properties: {
-        channelId: { type: 'string', format: 'uuid' },
         title: { type: 'string', maxLength: 120 },
         description: { type: 'string', maxLength: 5000 },
         visibility: { type: 'string', enum: ['PRIVATE', 'UNLISTED', 'PUBLIC'] },
@@ -57,6 +58,8 @@ export class VideosController {
   }
 
   @Post(':videoId/upload')
+  @ApiCookieAuth('session')
+  @UseGuards(SessionGuard)
   @ApiOperation({
     summary: 'Create a signed URL for the original video upload',
   })
@@ -80,6 +83,8 @@ export class VideosController {
   }
 
   @Post(':videoId/upload/complete')
+  @ApiCookieAuth('session')
+  @UseGuards(SessionGuard)
   @ApiOperation({ summary: 'Verify an upload and enqueue video processing' })
   completeUpload(
     @Param('videoId', ParseUUIDPipe) videoId: string,
@@ -87,5 +92,19 @@ export class VideosController {
     @Req() request: RequestWithContext,
   ) {
     return this.uploads.complete(videoId, user.id, request.requestId);
+  }
+
+  @Get()
+  listPublic() {
+    return this.videos.listPublic();
+  }
+
+  @Get(':videoId')
+  @UseGuards(OptionalSessionGuard)
+  getOne(
+    @Param('videoId', ParseUUIDPipe) videoId: string,
+    @Req() request: RequestWithContext,
+  ) {
+    return this.videos.getVisible(videoId, request.user?.id);
   }
 }

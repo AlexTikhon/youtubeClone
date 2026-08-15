@@ -1,19 +1,22 @@
 # YouTubeClone
 
-A small, production-minded video platform for learning full-stack architecture. Phase 0 provides a
-runnable monorepo, an authenticated draft/upload API slice, infrastructure, and a background-worker
-boundary. It intentionally does not pretend to transcode or stream video yet.
+An educational, production-minded video platform. Phase 1 implements the first complete vertical
+slice: browser login, direct upload to MinIO, asynchronous FFmpeg processing, publishing, discovery,
+and HLS playback.
 
 ## Prerequisites
 
 - Node.js 22+
 - pnpm 10+
 - Docker with Compose
+- FFmpeg and ffprobe on `PATH` when running the worker on the host
+
+The optional Compose worker includes FFmpeg and is useful when the host does not have it installed.
 
 ## Start locally
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item .env.example .env # first run only
 pnpm install
 docker compose up -d
 pnpm prisma:migrate:deploy
@@ -21,24 +24,41 @@ pnpm prisma:seed
 pnpm dev
 ```
 
-The applications are available at:
+Open http://localhost:3000 and log in with:
 
-- Web: http://localhost:3000
-- API: http://localhost:4000/api/v1
-- OpenAPI: http://localhost:4000/api/docs
-- MinIO console: http://localhost:9001
+- email: `developer@example.test`
+- password: `youtube-clone-dev` (or the value of `DEV_SEED_PASSWORD`)
 
-Host ports are configurable in `.env`. When changing one, update its corresponding `DATABASE_URL`,
-`REDIS_URL`, or `S3_ENDPOINT` as well; internal Compose service ports do not change.
+The web app is at http://localhost:3000, the API at http://localhost:4000/api/v1, OpenAPI at
+http://localhost:4000/api/docs, and the MinIO console at http://localhost:9001.
 
-The seed command prints a one-time local session token and channel ID. Use the token as the
-`ytc_session` cookie with curl/API tools. A browser login flow that issues an HTTP-only cookie is
-intentionally deferred; the API already validates only hashed, server-side sessions.
+If FFmpeg is not installed on the host, run only the web and API locally and use the media worker:
 
-## Everyday commands
+```powershell
+docker compose --profile media up -d --build worker
+pnpm build:packages
+pnpm --filter @youtube-clone/web dev
+pnpm --filter @youtube-clone/api dev
+```
+
+`FFMPEG_PATH` and `FFPROBE_PATH` may point to non-default executables. Video worker concurrency
+defaults to one because transcoding is CPU- and memory-heavy.
+
+## End-to-end flow
+
+```text
+login -> create owned draft -> signed PUT -> MinIO original -> complete
+      -> BullMQ -> ffprobe -> thumbnail + 720p-bounded HLS -> READY
+      -> public home card -> watch page -> native HLS / hls.js
+```
+
+Only MP4 uploads are accepted in Phase 1, with a 2 GB default limit. The browser MIME/size checks are
+for feedback; the API verifies the stored object and the worker treats ffprobe as authoritative.
+
+## Commands
 
 ```bash
-pnpm dev             # web + API + worker (infrastructure must already be running)
+pnpm dev
 pnpm build
 pnpm lint
 pnpm typecheck
@@ -46,22 +66,12 @@ pnpm test
 pnpm format:check
 ```
 
-Run infrastructure-backed tests explicitly after Compose is healthy:
+Infrastructure-backed tests remain explicit:
 
 ```powershell
 $env:RUN_INTEGRATION_TESTS='true'; pnpm --filter @youtube-clone/api test:integration
 ```
 
-## Phase 0 API flow
-
-1. `POST /api/v1/videos` creates a draft owned by the authenticated channel owner.
-2. `POST /api/v1/videos/:id/upload` creates an upload intent and signed MinIO URL.
-3. The browser uploads directly to object storage using the returned required headers.
-4. `POST /api/v1/videos/:id/upload/complete` verifies size/object existence, records the original
-   asset, and publishes a versioned BullMQ job.
-5. The worker validates and acknowledges the job. Phase 1 will replace the explicit deferred step
-   with ffprobe, thumbnail, transcoding, HLS, and final state transitions.
-
-Architecture details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), with the future media
-workflow in [docs/VIDEO_PIPELINE.md](docs/VIDEO_PIPELINE.md) and material choices in
-[docs/DECISIONS.md](docs/DECISIONS.md).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/VIDEO_PIPELINE.md](docs/VIDEO_PIPELINE.md),
+and [docs/DECISIONS.md](docs/DECISIONS.md) for boundaries, retry behavior, object layout, and Phase 1
+trade-offs.

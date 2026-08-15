@@ -9,10 +9,12 @@ import { QueueModule } from './infrastructure/queue/queue.module.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
 import { VideosModule } from './videos/videos.module.js';
+import { AuthModule } from './auth/auth.module.js';
 
 @Module({
   imports: [
     ConfigurationModule,
+    AuthModule,
     DatabaseModule,
     RedisModule,
     StorageModule,

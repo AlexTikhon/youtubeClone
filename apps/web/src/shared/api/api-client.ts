@@ -6,6 +6,10 @@ interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
 }
 
+export function resolveApiUrl(path: string): string {
+  return new URL(path, publicEnvironment.NEXT_PUBLIC_API_URL).toString();
+}
+
 export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {},
@@ -22,16 +26,12 @@ export async function apiRequest<T>(
     headers.set('x-request-id', crypto.randomUUID());
   }
 
-  const response = await fetch(
-    new URL(path, publicEnvironment.NEXT_PUBLIC_API_URL),
-    {
-      ...options,
-      headers,
-      credentials: 'include',
-      body:
-        options.body === undefined ? undefined : JSON.stringify(options.body),
-    },
-  );
+  const response = await fetch(resolveApiUrl(path), {
+    ...options,
+    headers,
+    credentials: 'include',
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
   if (response.ok) return (await response.json()) as T;
 
   const payload: unknown = await response.json().catch(() => null);

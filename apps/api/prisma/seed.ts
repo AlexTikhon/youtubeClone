@@ -1,16 +1,18 @@
-import { createHash, randomBytes } from 'node:crypto';
-
 import { PrismaClient } from '@prisma/client';
+import { hashPassword } from '../src/auth/password.js';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  const password = process.env.DEV_SEED_PASSWORD ?? 'youtube-clone-dev';
+  const passwordHash = await hashPassword(password);
   const user = await prisma.user.upsert({
     where: { email: 'developer@example.test' },
-    update: {},
+    update: { passwordHash },
     create: {
       email: 'developer@example.test',
       username: 'developer',
+      passwordHash,
       channel: {
         create: {
           handle: 'developer',
@@ -22,23 +24,15 @@ async function main() {
     include: { channel: true },
   });
 
-  const rawToken = randomBytes(32).toString('base64url');
-  const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-  await prisma.authSession.create({
-    data: {
-      userId: user.id,
-      tokenHash,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    },
-  });
-
   console.log(
     JSON.stringify({
       event: 'development.seed.completed',
       userId: user.id,
       channelId: user.channel?.id,
-      sessionCookie: `ytc_session=${rawToken}`,
-      warning: 'The session token is shown once for local development only.',
+      loginEmail: user.email,
+      loginPassword: password,
+      warning:
+        'Development credentials only. Set DEV_SEED_PASSWORD to override the password.',
     }),
   );
 }

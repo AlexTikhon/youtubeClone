@@ -14,6 +14,7 @@ import {
 import { workerEnvironment } from './config.js';
 import { processVideoJobSchema } from './video-job.schema.js';
 import { VideoProcessingPipeline } from './video-processing.pipeline.js';
+import { asProcessingError } from './processing-error.js';
 
 @Injectable()
 export class VideoWorkerService
@@ -50,6 +51,8 @@ export class VideoWorkerService
         event: 'video.processing.failed',
         videoId: job?.data.videoId,
         jobId: job?.id,
+        correlationId: job?.data.correlationId,
+        attempt: job?.attemptsMade,
         error: error.message,
       }),
     );
@@ -63,7 +66,6 @@ export class VideoWorkerService
 
   async onApplicationShutdown(): Promise<void> {
     await this.worker?.close();
-    await this.pipeline.close();
   }
 
   private async process(job: Job<ProcessVideoJob>): Promise<void> {
@@ -74,6 +76,27 @@ export class VideoWorkerService
       jobId: job.id,
       correlationId: input.correlationId,
     });
-    await this.pipeline.execute(job.id ?? 'unknown', input);
+    try {
+      await this.pipeline.execute(job.id ?? 'unknown', input);
+    } catch (error) {
+      const processingError = asProcessingError(error);
+      const attempts = job.opts.attempts ?? 1;
+      const exhausted = job.attemptsMade + 1 >= attempts;
+      if (!processingError.retryable) job.discard();
+      if (!processingError.retryable || exhausted) {
+        await this.pipeline.fail(input.videoId, processingError.publicReason);
+      }
+      this.logger.warn({
+        event: 'video.processing.attempt_failed',
+        videoId: input.videoId,
+        jobId: job.id,
+        correlationId: input.correlationId,
+        attempt: job.attemptsMade + 1,
+        attempts,
+        retryable: processingError.retryable,
+        error: processingError.message,
+      });
+      throw processingError;
+    }
   }
 }

@@ -38,6 +38,7 @@ model User {
   id           String        @id @default(uuid()) @db.Uuid
   email        String        @unique @db.VarChar(320)
   username     String        @unique @db.VarChar(50)
+  passwordHash String        @db.VarChar(255)
   avatarUrl    String?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -80,6 +81,8 @@ model Video {
   status          VideoStatus     @default(DRAFT)
   visibility      VideoVisibility @default(PRIVATE)
   durationSeconds Int?
+  width           Int?
+  height          Int?
   publishedAt     DateTime?
   failureReason   String?         @db.VarChar(500)
   createdAt       DateTime        @default(now())
@@ -120,6 +123,7 @@ model VideoAsset {
   height         Int?
   bitrateKbps    Int?
   durationSeconds Int?
+  metadata       Json?
   createdAt      DateTime       @default(now())
   video          Video          @relation(fields: [videoId], references: [id], onDelete: Cascade)
 

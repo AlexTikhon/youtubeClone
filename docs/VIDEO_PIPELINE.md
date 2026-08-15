@@ -1,40 +1,61 @@
 # Video pipeline
 
-## Implemented foundation
+## Lifecycle
 
 ```text
-DRAFT → UPLOADING → UPLOADED
-           │
-           └─ signed PUT → video-originals
-UPLOADED ── versioned BullMQ job ──> worker validation
+DRAFT -> UPLOADING -> UPLOADED -> PROCESSING -> READY
+            |             |            |
+            +-----------> FAILED <------+
 ```
 
-The API stores a `VideoUpload` intent before creating the signed URL. Completion uses `HEAD` to
-verify the object and expected byte size, then creates an `ORIGINAL` `VideoAsset`. Enqueueing happens
-after the database transaction. Signed-URL issuance and upload completion are retryable, while the
-deterministic BullMQ job ID prevents normal duplicate submissions.
+The API records an upload intent before issuing a 15-minute signed PUT URL. Completion checks video
+ownership, expected state/upload record, object existence, non-zero and expected byte length, and
+the intended `video/mp4` content type. It then transactionally creates the ORIGINAL asset and moves
+the video to UPLOADED before enqueueing a versioned BullMQ job.
 
-## Phase 1 target
+The worker claims UPLOADED as PROCESSING through the shared domain transition rules, then works in a
+unique `mkdtemp` directory:
 
 ```text
-upload validation
-  → enqueue
-  → claim UPLOADED → PROCESSING
-  → ffprobe metadata
-  → thumbnail generation
-  → bounded rendition transcodes
-  → HLS manifests and segments
-  → upload video-thumbnails / video-streams
-  → transactional asset records
-  → READY
+MinIO ORIGINAL -> local original -> ffprobe
+                                  +-> thumbnail.jpg
+                                  +-> hls/720p/index.m3u8 + segmentNNN.ts
+                                  -> upload generated assets
+                                  -> short metadata/assets/READY transaction
+                                  -> remove temporary directory in finally
 ```
 
-Failures move `PROCESSING → FAILED` with a safe reason after BullMQ retry policy is exhausted. Retry
-moves `FAILED → PROCESSING`. The worker must write to temporary per-job paths, make output object keys
-deterministic, and only expose a manifest after every referenced object exists. A compensating
-reconciliation job should repair the small database/queue dual-write window; a transactional outbox
-is warranted only if experience shows that retries and reconciliation are insufficient.
+ffprobe must report a positive duration and a usable video stream. Stored metadata includes source
+dimensions, container, codecs, frame rate, and bitrate when available. FFmpeg creates a JPEG frame
+near 10% of the duration and one H.264/AAC MPEG-TS HLS rendition bounded to 1280x720 without
+upscaling. Single rendition keeps Phase 1 reliable; the manifest's JSON metadata contains a
+renditions array and storage prefix so more renditions do not require segment rows or a model
+redesign.
 
-Allowed lifecycle transitions are explicit application logic. Neither controllers nor storage
-callbacks mutate status directly. `READY` means a playable manifest and required metadata exist—not
-merely that a queue job completed.
+## Object layout
+
+```text
+video-originals/originals/{videoId}/{uploadId}.mp4
+video-thumbnails/videos/{videoId}/thumbnail/thumbnail.jpg
+video-streams/videos/{videoId}/hls/720p/index.m3u8
+video-streams/videos/{videoId}/hls/720p/segment000.ts
+```
+
+Generated paths are deterministic. Segments upload before the manifest, so a newly exposed manifest
+does not reference absent objects. Segments remain only in object storage; PostgreSQL stores the
+ORIGINAL, THUMBNAIL, and HLS_MANIFEST records and rendition metadata.
+
+## Retries, idempotency, and failure
+
+BullMQ uses three attempts with exponential backoff and a deterministic `video-{videoId}` job ID.
+This is at-least-once execution, not distributed exactly-once processing. Retries reuse deterministic
+keys and upsert asset rows. READY delivery is a no-op. Network/storage/database failures are
+retryable; invalid probe output, unavailable media executables, and deterministic FFmpeg failures
+are non-retryable. The video moves to FAILED only for a non-retryable error or after retry exhaustion.
+Terminal failure makes a best-effort removal of generated thumbnail/HLS objects and stores a safe
+failure reason. Every attempt removes its local working directory in `finally`.
+
+The database and queue are not one atomic resource: a crash after the upload transaction and before
+enqueue can leave UPLOADED work. Repeating upload completion safely attempts the deterministic
+enqueue again. A transactional outbox is intentionally deferred until operational evidence warrants
+it.

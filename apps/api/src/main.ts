@@ -24,7 +24,7 @@ async function bootstrap(): Promise<void> {
 
   const openApiConfiguration = new DocumentBuilder()
     .setTitle('YouTubeClone API')
-    .setDescription('Phase 0 API foundation')
+    .setDescription('Phase 1 upload, processing, discovery, and playback API')
     .setVersion('1.0')
     .addCookieAuth(
       environment.SESSION_COOKIE_NAME,

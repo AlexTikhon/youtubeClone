@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
 import { QueryProvider } from '@/shared/query/query-provider';
+import { AppHeader } from '@/widgets/app-header/app-header';
 
 import './globals.css';
 
@@ -16,7 +17,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <QueryProvider>{children}</QueryProvider>
+        <QueryProvider>
+          <AppHeader />
+          {children}
+        </QueryProvider>
       </body>
     </html>
   );

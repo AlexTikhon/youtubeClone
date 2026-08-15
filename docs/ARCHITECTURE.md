@@ -1,61 +1,51 @@
 # Architecture
 
-## Boundaries
-
-The repository is a pnpm monorepo with three deployable applications and four small shared
-packages. The API is a modular monolith organized around business capabilities. PostgreSQL is the
-source of truth, Redis carries disposable queue state, and MinIO stores large binary objects.
+## Runtime boundaries
 
 ```text
-Next.js web ──REST/cookie──> NestJS API ──> PostgreSQL
-     │                           │
-     └──── signed PUT ──────> MinIO
-                                 ▲
-API ── versioned job ──> Redis/BullMQ ──> worker
+Next.js web --REST + HTTP-only cookie--> NestJS API --> PostgreSQL
+     |                                      |
+     +----------- signed PUT ------------> MinIO
+                                            ^
+API -- versioned job --> Redis/BullMQ --> worker -- ffprobe/FFmpeg
+                                            |
+                                            +--> MinIO thumbnail + HLS
 ```
 
-- `apps/web`: App Router UI, feature-oriented upload code, typed API client, React Query server
-  state, and local form state through React Hook Form.
-- `apps/api`: authentication, videos, uploads, health, and infrastructure adapters. Controllers
-  translate HTTP; services own workflows; the state machine owns valid lifecycle changes.
-- `apps/worker`: independently scalable BullMQ consumer. It validates a versioned payload before
-  handing work to the processing pipeline boundary.
-- `packages/types`, `validation`, `config`, `ui`: narrow shared contracts only; no generic utility
-  package.
+The API remains a modular monolith. Media processing is a separate deployment because its CPU,
+memory, timeout, and retry characteristics differ from request handling. PostgreSQL is authoritative
+for users, sessions, video state, upload intents, and asset metadata. Redis carries disposable queue
+state; MinIO carries all media bytes.
 
-## Request and dependency direction
+The worker has lifecycle-managed database, storage, and media-tool services. It never holds a
+database transaction while downloading media or running FFmpeg. The API and worker share only real
+cross-boundary contracts: video states and the versioned job payload.
 
-HTTP controllers depend on application services. Upload application code depends on object-storage
-and queue ports because those are genuine replacement/failure boundaries. Concrete S3 and BullMQ
-adapters live under API infrastructure. Prisma is used directly by focused services; a generic
-repository would add ceremony without protecting a useful boundary.
+## Authentication and authorization
 
-Every request receives a validated or generated request ID, returned in `x-request-id` and structured
-errors. Logs carry that ID and add `userId`, `videoId`, and `jobId` where known. Errors follow:
+Login creates a cryptographically random opaque token. Only its SHA-256 hash is stored in
+`AuthSession`; the browser receives the token in an `HttpOnly`, `SameSite=Lax`, path-wide cookie that
+is `Secure` in production and has an explicit lifetime. Every authenticated request validates the
+server-side session and expiry. Logout revokes the record and clears the cookie.
 
-```json
-{
-  "error": {
-    "code": "VIDEO_NOT_FOUND",
-    "message": "Video was not found",
-    "requestId": "..."
-  }
-}
-```
+Video creation derives the channel from `authenticatedUser.channel`; a browser never supplies an
+ownership-sensitive channel ID. Owned DRAFT through FAILED videos are visible to their owner.
+PUBLIC and UNLISTED videos are externally watchable only at READY. Only PUBLIC, READY videos with a
+`publishedAt` value appear on the home page. PRIVATE media routes require the owner session.
 
-Cursor page contracts exist for future collection endpoints; no unused pagination machinery is
-implemented yet. OpenAPI is served outside the versioned API at `/api/docs`.
+## HTTP and media delivery
 
-## Authentication
+API responses use deliberate DTOs and ISO dates; Prisma rows, BigInts, storage keys, and session
+internals do not cross the HTTP boundary. Browser upload bytes go directly to the signed MinIO URL.
 
-Opaque random session tokens are intended to be issued in cookies with `HttpOnly`, `Secure` in
-production, and `SameSite=Lax`. Only a SHA-256 token hash is stored in PostgreSQL. The API guard owns
-cookie-to-user resolution; downstream features receive an authenticated user context and never parse
-tokens. This costs a database/cache lookup but enables immediate revocation and avoids browser token
-storage. Login, CSRF hardening for cross-site deployments, rotation, and logout are Phase 1 work.
+Playback and thumbnail URLs point to guarded API media routes rather than MinIO. This avoids leaking
+internal object keys/endpoints, works across host and Docker DNS, and lets every relative HLS segment
+request use the same visibility policy. It adds API bandwidth, which is acceptable for this home
+phase; a production CDN with signed cookies/URLs is a later optimization.
 
-## Operations
+## Client structure
 
-`/api/v1/health/live` checks the process. `/api/v1/health/ready` checks PostgreSQL and Redis with
-short timeouts. JSON console logging is intentionally the only observability infrastructure in this
-phase; container/runtime log collection can consume it later.
+React Query owns session, collection, and video server state. Processing polling runs every two
+seconds and stops at READY or FAILED. XHR is isolated behind `shared/upload/upload-file.ts`, exposing
+progress and AbortSignal cancellation. The player uses native HLS where available and an isolated
+hls.js instance elsewhere, destroying it on cleanup.

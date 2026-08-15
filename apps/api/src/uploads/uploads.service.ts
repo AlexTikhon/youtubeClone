@@ -31,6 +31,13 @@ export class UploadsService {
   ) {}
 
   async start(videoId: string, ownerId: string, input: StartUploadInput) {
+    if (input.sizeBytes > this.environment.MAX_UPLOAD_SIZE_BYTES) {
+      throw new AppError(
+        'UPLOAD_TOO_LARGE',
+        'The file exceeds the upload size limit',
+        413,
+      );
+    }
     const video = await this.videos.findOwned(videoId, ownerId);
     if (
       video.status === 'UPLOADING' &&
@@ -138,7 +145,7 @@ export class UploadsService {
         409,
       );
     }
-    if (metadata.sizeBytes === 0n)
+    if (metadata.sizeBytes === null || metadata.sizeBytes === 0n)
       throw new AppError(
         'UPLOADED_OBJECT_EMPTY',
         'The uploaded object is empty',
@@ -151,6 +158,15 @@ export class UploadsService {
       throw new AppError(
         'UPLOAD_SIZE_MISMATCH',
         'Uploaded object size does not match the request',
+        409,
+      );
+    }
+    if (
+      metadata.contentType.toLowerCase() !== upload.contentType.toLowerCase()
+    ) {
+      throw new AppError(
+        'UPLOAD_CONTENT_TYPE_MISMATCH',
+        'Uploaded object content type does not match the upload intent',
         409,
       );
     }

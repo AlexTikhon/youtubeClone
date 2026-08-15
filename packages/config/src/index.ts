@@ -25,13 +25,32 @@ export const apiEnvironmentSchema = infrastructureSchema.extend({
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(4000),
   WEB_URL: z.string().url(),
   SESSION_COOKIE_NAME: z.string().min(1).default('ytc_session'),
+  SESSION_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(300)
+    .max(31_536_000)
+    .default(604_800),
+  MAX_UPLOAD_SIZE_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(2 * 1024 * 1024 * 1024),
 });
 
 export const workerEnvironmentSchema = infrastructureSchema.extend({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
     .default('development'),
-  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
+  FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
+  FFPROBE_PATH: z.string().min(1).default('ffprobe'),
+  MEDIA_PROCESS_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(3_600_000)
+    .default(900_000),
 });
 
 export const webEnvironmentSchema = z.object({
