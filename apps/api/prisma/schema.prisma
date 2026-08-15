@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum VideoStatus {
+  DRAFT
+  UPLOADING
+  UPLOADED
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum VideoVisibility {
+  PRIVATE
+  UNLISTED
+  PUBLIC
+}
+
+enum VideoAssetKind {
+  ORIGINAL
+  THUMBNAIL
+  HLS_MANIFEST
+  HLS_RENDITION
+}
+
+enum UploadStatus {
+  PENDING
+  COMPLETED
+}
+
+model User {
+  id           String        @id @default(uuid()) @db.Uuid
+  email        String        @unique @db.VarChar(320)
+  username     String        @unique @db.VarChar(50)
+  avatarUrl    String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  channel      Channel?
+  authSessions AuthSession[]
+}
+
+model AuthSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  tokenHash String   @unique @db.Char(64)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Channel {
+  id          String   @id @default(uuid()) @db.Uuid
+  ownerId     String   @unique @db.Uuid
+  handle      String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(1000)
+  avatarUrl   String?
+  bannerUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  videos      Video[]
+}
+
+model Video {
+  id              String          @id @default(uuid()) @db.Uuid
+  channelId       String          @db.Uuid
+  title           String          @db.VarChar(120)
+  description     String?         @db.VarChar(5000)
+  status          VideoStatus     @default(DRAFT)
+  visibility      VideoVisibility @default(PRIVATE)
+  durationSeconds Int?
+  publishedAt     DateTime?
+  failureReason   String?         @db.VarChar(500)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  channel         Channel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  assets          VideoAsset[]
+  upload          VideoUpload?
+
+  @@index([channelId, createdAt(sort: Desc)])
+  @@index([status, updatedAt])
+  @@index([visibility, publishedAt(sort: Desc)])
+}
+
+model VideoUpload {
+  id                String       @id @default(uuid()) @db.Uuid
+  videoId           String       @unique @db.Uuid
+  bucket            String       @db.VarChar(100)
+  objectKey         String       @db.VarChar(1024)
+  contentType       String       @db.VarChar(255)
+  expectedSizeBytes BigInt?
+  status            UploadStatus @default(PENDING)
+  createdAt         DateTime     @default(now())
+  completedAt       DateTime?
+  video             Video        @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([bucket, objectKey])
+}
+
+model VideoAsset {
+  id             String         @id @default(uuid()) @db.Uuid
+  videoId        String         @db.Uuid
+  kind           VideoAssetKind
+  bucket         String         @db.VarChar(100)
+  objectKey      String         @db.VarChar(1024)
+  mimeType       String         @db.VarChar(255)
+  sizeBytes      BigInt?
+  width          Int?
+  height         Int?
+  bitrateKbps    Int?
+  durationSeconds Int?
+  createdAt      DateTime       @default(now())
+  video          Video          @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([bucket, objectKey])
+  @@index([videoId, kind])
+}

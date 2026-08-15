@@ -1,0 +1,36 @@
+{
+  "name": "youtube-clone",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build:packages": "pnpm --filter \"./packages/*\" build",
+    "dev": "pnpm build:packages && dotenv -e .env -- concurrently -n web,api,worker -c cyan,green,magenta \"pnpm --filter @youtube-clone/web dev\" \"pnpm --filter @youtube-clone/api dev\" \"pnpm --filter @youtube-clone/worker dev\"",
+    "dev:infra": "docker compose up -d",
+    "build": "dotenv -e .env -- pnpm run build:workspace",
+    "build:workspace": "pnpm prisma:generate && pnpm -r --if-present build",
+    "lint": "eslint .",
+    "typecheck": "pnpm build:packages && pnpm prisma:generate && pnpm -r --if-present typecheck",
+    "test": "pnpm build:packages && pnpm -r --if-present test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prisma:generate": "dotenv -e .env -- pnpm --filter @youtube-clone/api prisma:generate",
+    "prisma:migrate": "dotenv -e .env -- pnpm --filter @youtube-clone/api prisma:migrate",
+    "prisma:migrate:deploy": "dotenv -e .env -- pnpm --filter @youtube-clone/api exec prisma migrate deploy",
+    "prisma:seed": "dotenv -e .env -- pnpm --filter @youtube-clone/api prisma:seed"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "concurrently": "^9.2.1",
+    "dotenv-cli": "^11.0.0",
+    "eslint": "^9.39.2",
+    "globals": "^16.5.0",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.50.1"
+  }
+}
