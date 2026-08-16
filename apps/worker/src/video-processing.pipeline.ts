@@ -81,6 +81,7 @@ export class VideoProcessingPipeline {
         original.bucket,
         original.objectKey,
         originalPath,
+        original.sizeBytes,
       );
       const metadata = await this.mediaTools.probe(originalPath);
       await this.mediaTools.generateThumbnail(
@@ -198,14 +199,19 @@ export class VideoProcessingPipeline {
             width: metadata.width,
             height: metadata.height,
             failureReason: null,
-            publishedAt:
-              video.visibility === 'PUBLIC'
-                ? (video.publishedAt ?? new Date())
-                : null,
           },
         });
         if (completed.count !== 1)
           throw new Error('Video state changed before processing completion');
+        await transaction.video.updateMany({
+          where: {
+            id: video.id,
+            status: 'READY',
+            visibility: 'PUBLIC',
+            publishedAt: null,
+          },
+          data: { publishedAt: new Date() },
+        });
       });
       this.logger.log({
         event: 'video.processing.ready',

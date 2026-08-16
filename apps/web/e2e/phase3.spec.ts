@@ -4,6 +4,25 @@ import { rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+test('keeps primary navigation available at a mobile viewport', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('/');
+  const readiness = await page.request.get(
+    `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'}/api/v1/health/ready`,
+  );
+  expect(readiness.ok()).toBe(true);
+  await expect(readiness.json()).resolves.toMatchObject({
+    status: 'ok',
+    dependencies: { postgres: { status: 'up' }, redis: { status: 'up' } },
+  });
+  const navigation = page.getByRole('navigation', { name: 'Primary' }).last();
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByRole('link', { name: 'Studio' })).toBeVisible();
+  await expect(navigation.getByRole('link', { name: 'History' })).toBeVisible();
+});
+
 test('login, search, like, and save a seeded video to Watch Later', async ({
   page,
 }) => {
@@ -109,7 +128,39 @@ test('@media upload, transcode, and open HLS playback', async ({ page }) => {
     const watchHref = await watchLink.getAttribute('href');
     uploadedVideoId = watchHref?.split('/').at(-1);
     await watchLink.click();
-    await expect(page.getByLabel('Video player')).toBeVisible();
+    const player = page.getByLabel('Video player');
+    await expect(player).toBeVisible();
+    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+    const thumbnail = await page.request.get(
+      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/thumbnail`,
+    );
+    expect(thumbnail.ok()).toBe(true);
+    expect(thumbnail.headers()['content-type']).toContain('image/jpeg');
+    expect((await thumbnail.body()).byteLength).toBeGreaterThan(0);
+
+    const manifest = await page.request.get(
+      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/hls/720p/index.m3u8`,
+    );
+    expect(manifest.ok()).toBe(true);
+    const manifestText = await manifest.text();
+    expect(manifestText).toContain('#EXTM3U');
+    const segmentName = manifestText.match(/segment\d{3,6}\.ts/)?.[0];
+    expect(segmentName).toBeTruthy();
+    const segment = await page.request.get(
+      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/hls/720p/${segmentName}`,
+    );
+    expect(segment.ok()).toBe(true);
+    expect((await segment.body()).byteLength).toBeGreaterThan(0);
+
+    await player.evaluate(async (element: HTMLVideoElement) => {
+      element.muted = true;
+      await element.play();
+    });
+    await expect
+      .poll(() =>
+        player.evaluate((element: HTMLVideoElement) => element.currentTime),
+      )
+      .toBeGreaterThan(0);
   } finally {
     if (uploadedVideoId) {
       const cleanupResponse = await page.request.delete(

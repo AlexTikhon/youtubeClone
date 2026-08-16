@@ -13,6 +13,10 @@ ownership, expected state/upload record, object existence, non-zero and expected
 the intended `video/mp4` content type. It then transactionally creates the ORIGINAL asset and moves
 the video to UPLOADED before enqueueing a versioned BullMQ job.
 
+Because the signed PUT remains usable until its 15-minute expiry, the worker compares the object's
+current content length with the API-verified ORIGINAL record before downloading it. A changed length
+is treated as invalid input; the downloaded bytes are still validated authoritatively by ffprobe.
+
 The worker claims UPLOADED as PROCESSING through the shared domain transition rules, then works in a
 unique `mkdtemp` directory:
 
@@ -28,9 +32,9 @@ MinIO ORIGINAL -> local original -> ffprobe
 ffprobe must report a positive duration and a usable video stream. Stored metadata includes source
 dimensions, container, codecs, frame rate, and bitrate when available. FFmpeg creates a JPEG frame
 near 10% of the duration and one H.264/AAC MPEG-TS HLS rendition bounded to 1280x720 without
-upscaling. Single rendition keeps Phase 1 reliable; the manifest's JSON metadata contains a
-renditions array and storage prefix so more renditions do not require segment rows or a model
-redesign.
+upscaling. A single rendition keeps local processing reliable; the manifest's JSON metadata contains
+a renditions array and storage prefix so an isolated adaptive-bitrate experiment would not require
+segment rows or a model redesign.
 
 ## Object layout
 
@@ -59,3 +63,18 @@ The database and queue are not one atomic resource: a crash after the upload tra
 enqueue can leave UPLOADED work. Repeating upload completion safely attempts the deterministic
 enqueue again. A transactional outbox is intentionally deferred until operational evidence warrants
 it.
+
+Visibility may change while FFmpeg is running. Processing completion first compare-and-sets READY,
+then conditionally initializes `publishedAt` from the current database visibility. The API's publish
+path performs the complementary check, so either ordering of the race leaves READY/PUBLIC published.
+
+## Real media verification
+
+```powershell
+docker compose --profile media up -d --build worker
+$env:RUN_MEDIA_E2E='true'; pnpm test:e2e:media
+```
+
+The browser test generates a two-second MP4 in the system temp directory, uploads it through the real
+signed URL, waits for READY, opens the HLS player, deletes the video, and removes the fixture. No media
+binary is committed to the repository.

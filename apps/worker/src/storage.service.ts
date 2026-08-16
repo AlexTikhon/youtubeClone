@@ -12,12 +12,13 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { Injectable } from '@nestjs/common';
+import type { OnApplicationShutdown } from '@nestjs/common';
 
 import { workerEnvironment } from './config.js';
 import { ProcessingError } from './processing-error.js';
 
 @Injectable()
-export class StorageService {
+export class StorageService implements OnApplicationShutdown {
   private readonly client = new S3Client({
     endpoint: workerEnvironment.S3_ENDPOINT,
     region: workerEnvironment.S3_REGION,
@@ -32,15 +33,29 @@ export class StorageService {
     bucket: string,
     objectKey: string,
     destination: string,
+    expectedSizeBytes: bigint | null,
   ): Promise<void> {
     try {
       const result = await this.client.send(
         new GetObjectCommand({ Bucket: bucket, Key: objectKey }),
       );
+      if (
+        expectedSizeBytes !== null &&
+        (result.ContentLength === undefined ||
+          BigInt(result.ContentLength) !== expectedSizeBytes)
+      ) {
+        if (result.Body instanceof Readable) result.Body.destroy();
+        throw new ProcessingError(
+          'Original object size changed after upload completion',
+          false,
+          'The uploaded video changed before processing',
+        );
+      }
       if (!(result.Body instanceof Readable))
         throw new Error('Storage did not return a Node.js stream');
       await pipeline(result.Body, createWriteStream(destination));
     } catch (error) {
+      if (error instanceof ProcessingError) throw error;
       throw new ProcessingError(
         `Could not download original ${bucket}/${objectKey}`,
         true,
@@ -178,5 +193,9 @@ export class StorageService {
       }
       continuationToken = page.NextContinuationToken;
     } while (continuationToken);
+  }
+
+  onApplicationShutdown(): void {
+    this.client.destroy();
   }
 }

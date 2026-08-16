@@ -14,6 +14,12 @@ export function useWatchTracking(
   const previousPosition = useRef<number | null>(null);
   const lastSavedAt = useRef(0);
   const viewSent = useRef(false);
+  useEffect(() => {
+    watched.current = 0;
+    previousPosition.current = null;
+    lastSavedAt.current = 0;
+    viewSent.current = false;
+  }, [videoId]);
   const save = useCallback(
     (positionSeconds: number) => {
       if (!authenticated) return;

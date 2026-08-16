@@ -69,6 +69,9 @@ export class HistoryService {
         userId,
         video: {
           status: 'READY',
+          durationSeconds: { not: null },
+          assets: { some: { kind: 'HLS_MANIFEST' } },
+          AND: { assets: { some: { kind: 'THUMBNAIL' } } },
           OR: [
             { visibility: { in: ['PUBLIC', 'UNLISTED'] } },
             { channel: { ownerId: userId } },
@@ -101,7 +104,15 @@ export class HistoryService {
     });
     const hasMore = rows.length > limit;
     const data = rows.slice(0, limit).map((row) => ({
-      video: this.videos.toCardDto(row.video),
+      video: {
+        id: row.video.id,
+        title: row.video.title,
+        durationSeconds: row.video.durationSeconds!,
+        thumbnailUrl: `/api/v1/media/videos/${row.video.id}/thumbnail`,
+        viewsCount: row.video._count.views,
+        channel: row.video.channel,
+        publishedAt: row.video.publishedAt?.toISOString() ?? null,
+      },
       lastPositionSeconds: row.lastPositionSeconds,
       lastWatchedAt: row.lastWatchedAt.toISOString(),
     }));

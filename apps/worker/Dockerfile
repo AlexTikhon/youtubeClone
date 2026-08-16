@@ -3,9 +3,19 @@ FROM node:24-alpine
 RUN apk add --no-cache ffmpeg && corepack enable
 
 WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY apps/worker/package.json apps/worker/package.json
+COPY packages/config/package.json packages/config/package.json
+COPY packages/types/package.json packages/types/package.json
+COPY packages/ui/package.json packages/ui/package.json
+COPY packages/validation/package.json packages/validation/package.json
+RUN pnpm install --frozen-lockfile
+
 COPY . .
-RUN pnpm install --frozen-lockfile \
-  && pnpm build:packages \
+RUN pnpm build:packages \
   && pnpm prisma:generate \
   && pnpm --filter @youtube-clone/worker build
 

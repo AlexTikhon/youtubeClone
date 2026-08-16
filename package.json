@@ -8,6 +8,7 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
+    "setup": "pnpm install --frozen-lockfile && docker compose up -d && pnpm prisma:migrate:deploy && pnpm prisma:seed",
     "build:packages": "pnpm --filter \"./packages/*\" build",
     "dev": "pnpm build:packages && dotenv -e .env -- concurrently -n web,api,worker -c cyan,green,magenta \"pnpm --filter @youtube-clone/web dev\" \"pnpm --filter @youtube-clone/api dev\" \"pnpm --filter @youtube-clone/worker dev\"",
     "dev:app": "pnpm build:packages && dotenv -e .env -- concurrently -n web,api -c cyan,green \"pnpm --filter @youtube-clone/web dev\" \"pnpm --filter @youtube-clone/api dev\"",
@@ -17,6 +18,7 @@
     "lint": "eslint .",
     "typecheck": "pnpm build:packages && pnpm prisma:generate && pnpm -r --if-present typecheck",
     "test": "pnpm build:packages && pnpm -r --if-present test",
+    "test:integration": "pnpm --filter @youtube-clone/api test:integration",
     "test:e2e": "pnpm --filter @youtube-clone/web test:e2e",
     "test:e2e:media": "pnpm --filter @youtube-clone/web test:e2e:media",
     "format": "prettier --write .",

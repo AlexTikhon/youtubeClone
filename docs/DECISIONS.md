@@ -3,7 +3,7 @@
 ## Server sessions and seeded development login
 
 Opaque server-side sessions provide revocation and keep credentials out of browser storage. Passwords
-use Node's scrypt with a random salt. Phase 1 intentionally provides one seeded local account rather
+use Node's scrypt with a random salt. The project intentionally provides one seeded local account rather
 than registration, OAuth, reset, or email workflows. Deployment must override the development seed
 password and production secrets.
 
@@ -16,8 +16,8 @@ can replace that adapter later without changing frontend DTOs.
 ## MPEG-TS HLS and one bounded rendition
 
 MPEG-TS, H.264, and AAC provide the least surprising native-Safari/hls.js baseline. One rendition
-bounded to 720p controls local processing cost. Rendition metadata is an array even though Phase 1
-emits one entry, allowing Phase 2 to add an adaptive master playlist without segment database rows.
+bounded to 720p controls local processing cost. Rendition metadata is an array even though the worker
+emits one entry, leaving adaptive bitrate as an isolated experiment without requiring segment rows.
 
 ## Polling instead of push
 
@@ -54,7 +54,7 @@ Likes, comments, subscriptions, views, and history stay in PostgreSQL. Composite
 and subscription uniqueness; aggregate counts use `_count` or deliberate count queries. Redis counters
 would add reconciliation complexity without demonstrated need.
 
-Only authenticated viewers count in Phase 2. The threshold is `min(10 seconds, 50% of duration)` and a
+Only authenticated viewers count. The threshold is `min(10 seconds, 50% of duration)` and a
 unique UTC-day bucket resists concurrent duplicates. Anonymous playback remains supported without
 fingerprinting. Distributed rate limiting and rolling view windows are production follow-ups.
 
@@ -74,15 +74,17 @@ semantics. Text rank is multiplied so capped popularity and recency remain tie-b
 turning search into the Home feed.
 
 Search rank is rounded to six decimal places and the opaque cursor stores rank, publication time,
-and ID. This makes page order deterministic for a stable database state. View-count changes can move
-an item between requests; immutable search snapshots are deliberately out of scope.
+ID, and the ranking `asOf` time. This prevents time-based recency drift between pages. View-count
+changes can still move an item between requests; immutable search snapshots are deliberately out of
+scope.
 
 ## Playlists and Watch Later
 
 Watch Later is a `Playlist` with explicit `WATCH_LATER` type, not a magic title or separate table.
 A partial unique index guarantees at most one per owner. It is fixed, PRIVATE, and cannot be edited
-or deleted. Playlist items use `(playlistId, videoId)` identity and a unique explicit position. An
-advisory transaction lock serializes position allocation for a playlist. The 200-item bound keeps
+or deleted; a SQL CHECK backs the PRIVATE invariant. Playlist items use `(playlistId, videoId)`
+identity and a unique explicit position. A transaction-scoped advisory lock serializes position
+allocation for a playlist. The 200-item bound keeps
 detail reads and ordering operations predictable without premature reorder UI.
 
 ## Cache and abuse policy
@@ -90,5 +92,7 @@ detail reads and ordering operations predictable without premature reorder UI.
 No Redis DTO cache was added. The likely read models have broad invalidation requirements and the
 local workload does not demonstrate a latency need. Redis does enforce small distributed
 fixed-window limits on login, comments, qualified-view writes, and public search; media routes are
-excluded. Public VOD segments and thumbnails are immutable and receive long-lived HTTP cache
-headers, manifests receive a short public TTL, and PRIVATE/UNLISTED bytes are never publicly cached.
+excluded. Likes have a higher authenticated-user limit because the write is idempotent but still
+causes an aggregate count query. Public VOD segments and thumbnails are immutable and receive
+long-lived HTTP cache headers, manifests receive a short public TTL, and PRIVATE/UNLISTED bytes are
+never publicly cached.

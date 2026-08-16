@@ -37,4 +37,37 @@ describe('HistoryService view deduplication', () => {
       viewsCount: 1,
     });
   });
+
+  it('returns a watched unlisted video without requiring a publication date', async () => {
+    const watchedAt = new Date('2026-08-16T10:00:00.000Z');
+    const prisma = {
+      watchHistory: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            videoId: '11111111-1111-4111-8111-111111111111',
+            lastPositionSeconds: 12,
+            lastWatchedAt: watchedAt,
+            video: {
+              id: '11111111-1111-4111-8111-111111111111',
+              title: 'Direct link',
+              durationSeconds: 30,
+              publishedAt: null,
+              channel: {
+                id: '22222222-2222-4222-8222-222222222222',
+                name: 'Creator',
+                handle: 'creator',
+                avatarUrl: null,
+              },
+              _count: { views: 1 },
+            },
+          },
+        ]),
+      },
+    };
+    const service = new HistoryService(prisma as never, {} as never);
+
+    await expect(service.list('user', undefined, 20)).resolves.toMatchObject({
+      data: [{ video: { publishedAt: null }, lastPositionSeconds: 12 }],
+    });
+  });
 });

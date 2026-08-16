@@ -62,7 +62,22 @@ export class PlaylistsService {
       orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
       include: {
-        _count: { select: { items: true } },
+        _count: {
+          select: {
+            items: {
+              where: {
+                video: {
+                  status: 'READY',
+                  visibility: 'PUBLIC',
+                  publishedAt: { not: null },
+                  durationSeconds: { not: null },
+                  assets: { some: { kind: 'HLS_MANIFEST' } },
+                  AND: { assets: { some: { kind: 'THUMBNAIL' } } },
+                },
+              },
+            },
+          },
+        },
         items: {
           where: {
             video: {
@@ -70,7 +85,8 @@ export class PlaylistsService {
               visibility: 'PUBLIC',
               publishedAt: { not: null },
               durationSeconds: { not: null },
-              assets: { some: { kind: 'THUMBNAIL' } },
+              assets: { some: { kind: 'HLS_MANIFEST' } },
+              AND: { assets: { some: { kind: 'THUMBNAIL' } } },
             },
           },
           orderBy: [{ position: 'asc' }],

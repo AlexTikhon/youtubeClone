@@ -195,7 +195,7 @@ export interface LikeStateDto {
 }
 
 export interface HistoryItemDto {
-  video: VideoCardDto;
+  video: Omit<VideoCardDto, 'publishedAt'> & { publishedAt: string | null };
   lastPositionSeconds: number;
   lastWatchedAt: string;
 }

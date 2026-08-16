@@ -140,9 +140,8 @@ async function main() {
       userId: user.id,
       channelId: user.channel?.id,
       loginEmail: user.email,
-      loginPassword: password,
       warning:
-        'Development credentials only. Set DEV_SEED_PASSWORD to override the password.',
+        'Development account only. Credentials are documented in the local README; override DEV_SEED_PASSWORD outside throwaway environments.',
     }),
   );
 }

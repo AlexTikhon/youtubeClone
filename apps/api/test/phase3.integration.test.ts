@@ -253,7 +253,16 @@ describe.skipIf(!enabled)('Phase 3 discovery and playlists integration', () => {
       ).status,
     ).toBe(404);
 
-    const mine = (await (await request('/playlists/mine?limit=50')).json()) as {
+    const concurrentMineResponses = await Promise.all(
+      Array.from({ length: 4 }, () => request('/playlists/mine?limit=50')),
+    );
+    expect(concurrentMineResponses.every((response) => response.ok)).toBe(true);
+    expect(
+      await prisma.playlist.count({
+        where: { ownerId: viewerId, type: 'WATCH_LATER' },
+      }),
+    ).toBe(1);
+    const mine = (await concurrentMineResponses[0]!.json()) as {
       data: Array<{ id: string; type: string }>;
     };
     const watchLater = mine.data.find(
@@ -270,6 +279,18 @@ describe.skipIf(!enabled)('Phase 3 discovery and playlists integration', () => {
         })
       ).status,
     ).toBe(409);
+    await expect(
+      prisma.playlist.update({
+        where: { id: watchLater!.id },
+        data: { visibility: 'PUBLIC' },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      prisma.playlist.findUniqueOrThrow({
+        where: { id: watchLater!.id },
+        select: { visibility: true },
+      }),
+    ).resolves.toEqual({ visibility: 'PRIVATE' });
     expect(
       (
         await request(

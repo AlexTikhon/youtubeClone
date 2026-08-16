@@ -242,6 +242,18 @@ export class VideosService {
       },
       include: OWNER_INCLUDE,
     });
+    if (
+      input.visibility === 'PUBLIC' &&
+      video.status === 'READY' &&
+      video.publishedAt === null
+    ) {
+      const published = await this.prisma.video.update({
+        where: { id: videoId },
+        data: { publishedAt: new Date() },
+        include: OWNER_INCLUDE,
+      });
+      return this.toOwnerDto(published);
+    }
     return this.toOwnerDto(video);
   }
 

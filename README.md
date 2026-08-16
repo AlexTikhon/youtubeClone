@@ -1,89 +1,94 @@
 # YouTubeClone
 
-An educational, production-minded video platform. Phase 1 provides the real direct-upload/FFmpeg/HLS
-pipeline. Phase 2 adds channels, social/watch state, ranked feeds, and creator Studio. Phase 3
-completes the product with PostgreSQL full-text search, related videos, playlists, Watch Later,
-channel settings, production hardening, and browser-level tests without replacing those foundations.
+YouTubeClone is an educational, production-minded video platform built to exercise the boundaries
+that make media products interesting: direct uploads, asynchronous transcoding, authorized HLS
+delivery, relational product state, ranked discovery, and a modern React client. It is intentionally
+feature-complete as a portfolio project; the goal is explainable engineering, not a pixel-perfect or
+YouTube-scale clone.
 
-## Prerequisites
+## Architecture at a glance
 
-- Node.js 22+
-- pnpm 10+
-- Docker with Compose
-- FFmpeg and ffprobe on `PATH` when running the worker on the host
+```text
+Browser -- Next.js UI -- REST/session cookie --> NestJS modular monolith --> PostgreSQL
+   |                                                |                 |
+   +-- signed PUT --------------------------------> MinIO             +--> Redis/BullMQ
+   |                                                                      |
+   +<-- authorized thumbnail/HLS routes <---------- MinIO <--- FFmpeg worker
+```
 
-The optional Compose worker includes FFmpeg and is useful when the host does not have it installed.
+The browser uploads large originals directly to S3-compatible MinIO. The API verifies the stored
+object and enqueues a versioned BullMQ job. A separately deployable worker validates media with
+ffprobe and creates a thumbnail plus one 720p-bounded HLS rendition. PostgreSQL remains authoritative
+for ownership, lifecycle, social state, playlists, history, and full-text search.
 
-## Start locally
+## Product capabilities
+
+- Opaque server-side sessions and owned channels
+- Direct signed MP4 upload, FFmpeg processing, thumbnails, and HLS playback
+- Explicit video lifecycle with retry-safe jobs and deletion barriers
+- Home/subscription feeds, likes, comments, subscriptions, qualified views, history, and resume
+- PostgreSQL full-text search, related videos, playlists, and concurrency-safe Watch Later
+- Creator Studio for metadata, visibility, processing state, and safe deletion
+- Structured API errors/logs, rate limits, health checks, unit/integration/browser/media tests, and CI
+
+## Run locally
+
+Prerequisites: Node.js 22+, pnpm 10+, and Docker Compose. For real media processing, either install
+FFmpeg/ffprobe on the host or use the optional worker container.
 
 ```powershell
 Copy-Item .env.example .env # first run only
-pnpm install
-docker compose up -d
-pnpm prisma:migrate:deploy
-pnpm prisma:seed
+pnpm setup
 pnpm dev
 ```
 
-Open http://localhost:3000 and log in with:
+`pnpm setup` is safe to repeat: it installs the locked dependencies, starts PostgreSQL/Redis/MinIO,
+applies migrations, and upserts development seed data. It does not delete volumes or reset the
+database.
 
-- email: `developer@example.test`
-- password: `youtube-clone-dev` (or the value of `DEV_SEED_PASSWORD`)
-
-The web app is at http://localhost:3000, the API at http://localhost:4000/api/v1, OpenAPI at
+Open http://localhost:3000 and log in with `developer@example.test` / `youtube-clone-dev` (or your
+`DEV_SEED_PASSWORD`). The API is at http://localhost:4000/api/v1, OpenAPI at
 http://localhost:4000/api/docs, and the MinIO console at http://localhost:9001.
 
-If FFmpeg is not installed on the host, run only the web and API locally and use the media worker:
+If FFmpeg is not on the host, run the containerized worker and only web/API processes locally:
 
 ```powershell
 docker compose --profile media up -d --build worker
-pnpm build:packages
-pnpm --filter @youtube-clone/web dev
-pnpm --filter @youtube-clone/api dev
+pnpm dev:app
 ```
 
-`FFMPEG_PATH` and `FFPROBE_PATH` may point to non-default executables. Video worker concurrency
-defaults to one because transcoding is CPU- and memory-heavy.
+Do not run the host and Compose workers simultaneously. Local worker concurrency defaults to one
+because each FFmpeg process is CPU- and memory-intensive.
 
-## End-to-end flow
+The seed includes a READY metadata record so the fast UI/search E2E can exercise product workflows;
+it does not fabricate media bytes. Use the upload flow (or the media E2E) when demonstrating actual
+playback.
 
-```text
-login -> create owned draft -> signed PUT -> MinIO original -> complete
-      -> BullMQ -> ffprobe -> thumbnail + 720p-bounded HLS -> READY
-      -> public home card -> watch page -> native HLS / hls.js
-      -> qualified view + progress -> like/comment/subscribe/save -> history/feed/playlists
-      -> search -> related video or playlist-context playback
-```
-
-Only MP4 uploads are accepted, with a 2 GB default limit. The browser MIME/size checks are
-for feedback; the API verifies the stored object and the worker treats ffprobe as authoritative.
-
-## Commands
+## Verification
 
 ```bash
-pnpm dev
-pnpm build
 pnpm lint
 pnpm typecheck
-pnpm test
+pnpm test                 # unit and component tests
+pnpm build
+pnpm test:integration     # requires PostgreSQL and Redis
+pnpm test:e2e             # fast seeded browser workflow
+pnpm test:e2e:media       # opt-in real upload/FFmpeg/MinIO/HLS workflow
 pnpm format:check
-pnpm test:e2e
 ```
 
-Infrastructure-backed tests remain explicit:
+For the media suite, start the Compose worker first and set `RUN_MEDIA_E2E=true` as described in
+[the video pipeline guide](docs/VIDEO_PIPELINE.md).
 
-```powershell
-$env:RUN_INTEGRATION_TESTS='true'; pnpm --filter @youtube-clone/api test:integration
-```
+## Engineering decisions
 
-The fast Playwright flow expects migrated, seeded local infrastructure. It does not wait for
-transcoding. The real upload/FFmpeg/HLS browser flow is deliberately separate:
+The design deliberately uses a modular monolith, PostgreSQL FTS instead of Elasticsearch, polling
+instead of WebSockets, cursor pagination instead of offsets, and no application DTO cache. Those
+choices match the demonstrated workload while keeping consistency and invalidation understandable.
 
-```powershell
-$null = docker compose --profile media up -d --build worker
-$env:RUN_MEDIA_E2E='true'; pnpm test:e2e:media
-```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/VIDEO_PIPELINE.md](docs/VIDEO_PIPELINE.md),
-and [docs/DECISIONS.md](docs/DECISIONS.md) for boundaries, retry behavior, pagination, ranking,
-search, playlists, cache policy, view/history policy, and deletion concurrency trade-offs.
+- [Architecture](docs/ARCHITECTURE.md)
+- [Video pipeline](docs/VIDEO_PIPELINE.md)
+- [Search](docs/SEARCH.md)
+- [Decision record](docs/DECISIONS.md)
+- [5–10 minute demo](docs/DEMO.md)
+- [Senior interview guide](docs/INTERVIEW.md)

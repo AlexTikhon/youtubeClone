@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { startUploadSchema } from './upload.schemas.js';
 
 describe('startUploadSchema', () => {
-  it('accepts a non-empty MP4 within the Phase 1 limit', () => {
+  it('accepts a non-empty MP4 within the configured product limit', () => {
     expect(
       startUploadSchema.parse({
         fileName: 'clip.mp4',

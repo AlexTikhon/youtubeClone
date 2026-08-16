@@ -18,7 +18,7 @@ const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
 export function validateVideoFile(file: File): string | null {
   if (file.size === 0) return 'Choose a non-empty video file.';
-  if (file.type !== 'video/mp4') return 'Phase 1 accepts MP4 video files.';
+  if (file.type !== 'video/mp4') return 'Choose an MP4 video file.';
   if (file.size > MAX_FILE_SIZE) return 'The video exceeds the 2 GB limit.';
   return null;
 }

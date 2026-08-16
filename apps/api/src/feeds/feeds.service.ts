@@ -65,7 +65,11 @@ export class FeedsService {
       }),
       this.prisma.video.findMany({
         where: commonWhere,
-        orderBy: { views: { _count: 'desc' } },
+        orderBy: [
+          { views: { _count: 'desc' } },
+          { publishedAt: 'desc' },
+          { id: 'desc' },
+        ],
         take: 75,
         include,
       }),

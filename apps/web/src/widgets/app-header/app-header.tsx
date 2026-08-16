@@ -4,6 +4,15 @@ import { Suspense } from 'react';
 import { AuthStatus } from '@/features/auth/auth-status';
 import { SearchForm } from '@/features/search/search-form';
 
+const navigation = [
+  ['Home', '/'],
+  ['Subscriptions', '/subscriptions'],
+  ['History', '/history'],
+  ['Playlists', '/playlists'],
+  ['Studio', '/studio'],
+  ['Upload', '/studio/upload'],
+] as const;
+
 export function AppHeader() {
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/90">
@@ -15,25 +24,15 @@ export function AppHeader() {
             </span>
             <span className="hidden sm:inline">YouTubeClone</span>
           </Link>
-          <nav className="hidden gap-4 text-sm text-zinc-400 lg:flex">
-            <Link className="hover:text-white" href="/">
-              Home
-            </Link>
-            <Link className="hover:text-white" href="/subscriptions">
-              Subscriptions
-            </Link>
-            <Link className="hover:text-white" href="/history">
-              History
-            </Link>
-            <Link className="hover:text-white" href="/playlists">
-              Playlists
-            </Link>
-            <Link className="hover:text-white" href="/studio">
-              Studio
-            </Link>
-            <Link className="hover:text-white" href="/studio/upload">
-              Upload
-            </Link>
+          <nav
+            aria-label="Primary"
+            className="hidden gap-4 text-sm text-zinc-400 lg:flex"
+          >
+            {navigation.map(([label, href]) => (
+              <Link className="hover:text-white" href={href} key={href}>
+                {label}
+              </Link>
+            ))}
           </nav>
         </div>
         <div className="order-3 flex w-full min-w-0 flex-1 md:order-none md:mx-auto md:max-w-xl">
@@ -46,6 +45,16 @@ export function AppHeader() {
         <div className="ml-auto">
           <AuthStatus />
         </div>
+        <nav
+          aria-label="Primary"
+          className="order-4 flex w-full gap-5 overflow-x-auto pb-1 text-sm text-zinc-400 lg:hidden"
+        >
+          {navigation.map(([label, href]) => (
+            <Link className="shrink-0 hover:text-white" href={href} key={href}>
+              {label}
+            </Link>
+          ))}
+        </nav>
       </div>
     </header>
   );

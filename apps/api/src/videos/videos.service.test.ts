@@ -94,4 +94,44 @@ describe('VideosService authorization and publishing', () => {
       }),
     );
   });
+
+  it('publishes after a processing completion wins the visibility-update race', async () => {
+    const createdAt = new Date('2026-08-16T10:00:00Z');
+    const readyRecord = {
+      ...privateVideo,
+      status: 'READY' as const,
+      visibility: 'PUBLIC' as const,
+      createdAt,
+      width: 1280,
+      height: 720,
+      failureReason: null,
+      channel: { name: 'Owner', handle: 'owner' },
+      assets: [],
+      _count: { views: 0, likes: 0, comments: 0 },
+    };
+    const prisma = {
+      video: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: privateVideo.id,
+          status: 'PROCESSING',
+          visibility: 'PRIVATE',
+          publishedAt: null,
+        }),
+        update: vi
+          .fn()
+          .mockResolvedValueOnce({ ...readyRecord, publishedAt: null })
+          .mockResolvedValueOnce({ ...readyRecord, publishedAt: createdAt }),
+      },
+    };
+    const service = new VideosService(
+      prisma as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.update(privateVideo.id, 'owner-id', { visibility: 'PUBLIC' }),
+    ).resolves.toMatchObject({ publishedAt: createdAt.toISOString() });
+    expect(prisma.video.update).toHaveBeenCalledTimes(2);
+  });
 });

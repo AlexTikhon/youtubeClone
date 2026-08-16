@@ -228,6 +228,8 @@ model Playlist {
   owner       User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   items       PlaylistItem[]
 
+  /// A SQL CHECK constraint also requires WATCH_LATER rows to remain PRIVATE.
+  /// Prisma cannot currently express the migration-only partial unique owner index.
   @@index([ownerId, updatedAt(sort: Desc), id(sort: Desc)])
 }
 

@@ -10,6 +10,7 @@ import {
 import type { Readable } from 'node:stream';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Inject, Injectable } from '@nestjs/common';
+import type { OnApplicationShutdown } from '@nestjs/common';
 
 import type { ApiEnvironment } from '@youtube-clone/config';
 
@@ -22,7 +23,7 @@ import type {
 } from './storage.port.js';
 
 @Injectable()
-export class S3StorageAdapter implements ObjectStorage {
+export class S3StorageAdapter implements ObjectStorage, OnApplicationShutdown {
   private readonly client: S3Client;
 
   constructor(
@@ -110,5 +111,9 @@ export class S3StorageAdapter implements ObjectStorage {
       }
       continuationToken = page.NextContinuationToken;
     } while (continuationToken);
+  }
+
+  onApplicationShutdown(): void {
+    this.client.destroy();
   }
 }

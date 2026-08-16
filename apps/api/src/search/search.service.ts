@@ -8,12 +8,14 @@ import { decodeCursor, encodeCursor } from '../infrastructure/http/cursor.js';
 import { VideosService } from '../videos/videos.service.js';
 
 interface SearchCursor {
+  asOf: string;
   rank: number;
   publishedAt: string;
   id: string;
 }
 
 const searchCursorSchema = z.object({
+  asOf: z.string().datetime(),
   rank: z.number().finite().nonnegative(),
   publishedAt: z.string().datetime(),
   id: z.string().uuid(),
@@ -51,6 +53,7 @@ export class SearchService {
     const after = cursor
       ? decodeCursor<SearchCursor>(cursor, searchCursorSchema)
       : undefined;
+    const asOf = after ? new Date(after.asOf) : new Date();
     const cursorClause = after
       ? Prisma.sql`AND (
           ranked.rank < ${after.rank}
@@ -75,7 +78,7 @@ export class SearchService {
           ROUND((
             ts_rank_cd(video."searchVector", search_query.value) * 1000
             + LEAST(LN(1 + COUNT(view_record.id)), 10) * 0.5
-            + GREATEST(0, 2 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - video."publishedAt")) / 2592000)
+            + GREATEST(0, 2 - EXTRACT(EPOCH FROM (${asOf}::timestamptz - video."publishedAt")) / 2592000)
           )::numeric, 6)::double precision AS rank
         FROM "Video" AS video
         JOIN "Channel" AS channel ON channel.id = video."channelId"
@@ -113,6 +116,7 @@ export class SearchService {
         nextCursor:
           hasMore && last
             ? encodeCursor({
+                asOf: asOf.toISOString(),
                 rank: last.rank,
                 publishedAt: last.publishedAt.toISOString(),
                 id: last.id,

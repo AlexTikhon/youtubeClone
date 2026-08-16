@@ -30,6 +30,11 @@ select {
   font: inherit;
 }
 
+:focus-visible {
+  outline: 2px solid #f87171;
+  outline-offset: 3px;
+}
+
 .field {
   width: 100%;
   border: 1px solid #3f3f46;
