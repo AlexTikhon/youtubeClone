@@ -70,6 +70,7 @@ export class VideoWorkerService
 
   private async process(job: Job<ProcessVideoJob>): Promise<void> {
     const input = processVideoJobSchema.parse(job.data);
+    const startedAt = performance.now();
     this.logger.log({
       event: 'video.processing.received',
       videoId: input.videoId,
@@ -78,6 +79,13 @@ export class VideoWorkerService
     });
     try {
       await this.pipeline.execute(job.id ?? 'unknown', input);
+      this.logger.log({
+        event: 'video.processing.completed',
+        videoId: input.videoId,
+        jobId: job.id,
+        correlationId: input.correlationId,
+        durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      });
     } catch (error) {
       const processingError = asProcessingError(error);
       const attempts = job.opts.attempts ?? 1;
@@ -94,6 +102,7 @@ export class VideoWorkerService
         attempt: job.attemptsMade + 1,
         attempts,
         retryable: processingError.retryable,
+        durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
         error: processingError.message,
       });
       throw processingError;

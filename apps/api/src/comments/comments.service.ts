@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { CommentDto } from '@youtube-clone/types';
 import type { CreateCommentInput } from '@youtube-clone/validation';
+import { z } from 'zod';
 
 import { PrismaService } from '../infrastructure/database/prisma.service.js';
 import { AppError } from '../infrastructure/http/app-error.js';
@@ -11,6 +12,10 @@ interface CommentCursor {
   date: string;
   id: string;
 }
+const commentCursorSchema = z.object({
+  date: z.string().datetime(),
+  id: z.string().uuid(),
+});
 
 @Injectable()
 export class CommentsService {
@@ -27,7 +32,9 @@ export class CommentsService {
     limit: number,
   ) {
     const video = await this.videos.assertWatchAccess(videoId, userId);
-    const after = cursor ? decodeCursor<CommentCursor>(cursor) : undefined;
+    const after = cursor
+      ? decodeCursor<CommentCursor>(cursor, commentCursorSchema)
+      : undefined;
     const comments = await this.prisma.comment.findMany({
       where: {
         videoId,

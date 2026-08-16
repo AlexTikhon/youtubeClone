@@ -12,6 +12,20 @@ API -- versioned job --> Redis/BullMQ --> worker -- ffprobe/FFmpeg
                                             +--> MinIO thumbnail + HLS
 ```
 
+```text
+                         Next.js
+                            |
+        Home -- Search -- Watch -- Playlists -- Studio
+                            |
+                         NestJS API
+                 /          |          \
+          PostgreSQL      Redis        MinIO
+          domain + FTS   queue/limits   media
+                            |
+                          worker
+                    ffprobe / FFmpeg
+```
+
 The API remains a modular monolith. Media processing is a separate deployment because its CPU,
 memory, timeout, and retry characteristics differ from request handling. PostgreSQL is authoritative
 for users, sessions, video state, upload intents, and asset metadata. Redis carries disposable queue
@@ -50,6 +64,11 @@ seconds and stops at READY or FAILED. XHR is isolated behind `shared/upload/uplo
 progress and AbortSignal cancellation. The player uses native HLS where available and an isolated
 hls.js instance elsewhere, destroying it on cleanup.
 
+Phase 3 keeps URL search state in `/search?q=...`, isolates Save/playlist behavior from the player,
+and preserves playlist playback with `?list=<playlistId>`. Route shells remain server components;
+interactive query/mutation boundaries are focused client components. A small query-key factory is
+used for the cross-feature invalidations introduced by playlists and search.
+
 ## Phase 2 read models and pagination
 
 Public cards, watch details, and creator rows are separate DTOs. Public cards never contain failure or
@@ -79,3 +98,20 @@ cleanup runs outside database transactions and is idempotent; only success casca
 Failure leaves `DELETING` for an owner retry. If a worker uploads after deletion begins, its final state
 claim fails, its asset transaction rolls back, and it removes generated prefixes. This prevents both
 database resurrection and normal-operation storage leaks.
+
+## Phase 3 discovery and playlists
+
+PostgreSQL owns a trigger-maintained weighted video `tsvector`. A partial GIN index contains only
+READY/PUBLIC rows. Search ranks text first, then bounded popularity and recency signals, and keysets
+on rounded `(rank, publishedAt, id)`. Related videos use same-channel, title-token, popularity, and
+recency signals and return at most 20 database-ranked rows.
+
+`Playlist` and `PlaylistItem` are a small explicit domain. Composite keys prevent duplicate videos,
+positions define order, foreign-key cascades remove only membership rows, and a partial unique index
+allows one `WATCH_LATER` system playlist per user. Public playlist reads still include only playable
+PUBLIC videos. Owner checks happen in the service before every mutation.
+
+Redis remains queue infrastructure plus a narrow fixed-window rate-limit boundary for login,
+comments, view qualification, and search. DTO/read-model caching is intentionally absent because
+visibility and metadata invalidation spans feeds, search, related results, and playlists. Public
+immutable thumbnails/HLS segments use HTTP caching; non-public media is `private, no-store`.

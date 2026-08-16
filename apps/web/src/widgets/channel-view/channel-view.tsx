@@ -39,7 +39,7 @@ export function ChannelView({ handle }: { handle: string }) {
         {channel.data.ownedByCurrentUser ? (
           <Link
             className="rounded-lg border border-zinc-700 px-4 py-2"
-            href="/studio"
+            href="/studio/channel"
           >
             Open Studio
           </Link>

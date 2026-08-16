@@ -1,18 +1,22 @@
 import {
   Controller,
+  Body,
   Delete,
   Get,
   Inject,
   Param,
   ParseUUIDPipe,
   Put,
+  Patch,
   Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import {
   cursorPaginationSchema,
+  updateChannelSchema,
   type CursorPaginationInput,
+  type UpdateChannelInput,
 } from '@youtube-clone/validation';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/auth.types.js';
@@ -27,6 +31,19 @@ export class ChannelsController {
   constructor(
     @Inject(ChannelsService) private readonly channels: ChannelsService,
   ) {}
+  @Get('mine/settings')
+  @UseGuards(SessionGuard)
+  mine(@CurrentUser() user: AuthenticatedUser) {
+    return this.channels.getMine(user.id);
+  }
+  @Patch('mine/settings')
+  @UseGuards(SessionGuard)
+  updateMine(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body(new ZodBodyPipe(updateChannelSchema)) input: UpdateChannelInput,
+  ) {
+    return this.channels.updateMine(user.id, input);
+  }
   @Get(':handle')
   @UseGuards(OptionalSessionGuard)
   get(@Param('handle') handle: string, @Req() request: RequestWithContext) {

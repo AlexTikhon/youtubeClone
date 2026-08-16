@@ -10,6 +10,7 @@ import type {
 } from '@youtube-clone/validation';
 import type { ApiEnvironment } from '@youtube-clone/config';
 import type { Prisma } from '@prisma/client';
+import { z } from 'zod';
 
 import { API_ENVIRONMENT } from '../config/config.module.js';
 import { PrismaService } from '../infrastructure/database/prisma.service.js';
@@ -25,6 +26,10 @@ interface DateIdCursor {
   date: string;
   id: string;
 }
+const dateIdCursorSchema = z.object({
+  date: z.string().datetime(),
+  id: z.string().uuid(),
+});
 
 const OWNER_INCLUDE = {
   channel: { select: { name: true, handle: true } },
@@ -104,7 +109,9 @@ export class VideosService {
   }
 
   async listOwned(ownerId: string, cursor: string | undefined, limit: number) {
-    const after = cursor ? decodeCursor<DateIdCursor>(cursor) : undefined;
+    const after = cursor
+      ? decodeCursor<DateIdCursor>(cursor, dateIdCursorSchema)
+      : undefined;
     const videos = await this.prisma.video.findMany({
       where: {
         channel: { ownerId },
@@ -183,6 +190,7 @@ export class VideosService {
     return {
       id: video.id,
       title: video.title,
+      visibility: video.visibility,
       description: video.description,
       durationSeconds: video.durationSeconds,
       playbackUrl: `/api/v1/media/videos/${video.id}/hls/720p/index.m3u8`,
@@ -286,17 +294,24 @@ export class VideosService {
       this.logger.log({ event: 'video.deleted', videoId, ownerId });
       return { deleted: true };
     } catch (error) {
+      this.logger.error({
+        event: 'video.deletion.cleanup_failed',
+        videoId,
+        ownerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw new AppError(
         'VIDEO_DELETE_FAILED',
         'Deletion is pending because media cleanup failed. Retry the deletion.',
         503,
-        error instanceof Error ? error.message : undefined,
       );
     }
   }
 
   async listPublic(cursor: string | undefined, limit: number) {
-    const after = cursor ? decodeCursor<DateIdCursor>(cursor) : undefined;
+    const after = cursor
+      ? decodeCursor<DateIdCursor>(cursor, dateIdCursorSchema)
+      : undefined;
     const videos = await this.prisma.video.findMany({
       where: {
         status: 'READY',
@@ -359,8 +374,8 @@ export class VideosService {
     return video;
   }
 
-  async assertMediaAccess(videoId: string, ownerId?: string): Promise<void> {
-    await this.assertWatchAccess(videoId, ownerId);
+  async assertMediaAccess(videoId: string, ownerId?: string) {
+    return this.assertWatchAccess(videoId, ownerId);
   }
 
   private toOwnerDto(video: OwnerVideoRecord): OwnerVideoDto {

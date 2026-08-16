@@ -23,6 +23,8 @@ import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/auth.types.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import { ZodBodyPipe } from '../infrastructure/http/zod-body.pipe.js';
+import { RateLimit } from '../infrastructure/http/rate-limit.decorator.js';
+import { RateLimitGuard } from '../infrastructure/http/rate-limit.guard.js';
 import { HistoryService } from './history.service.js';
 
 @Controller()
@@ -32,6 +34,8 @@ export class HistoryController {
     @Inject(HistoryService) private readonly history: HistoryService,
   ) {}
   @Post('videos/:videoId/view')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ scope: 'view', limit: 30, windowSeconds: 60 })
   view(
     @Param('videoId', ParseUUIDPipe) videoId: string,
     @CurrentUser() user: AuthenticatedUser,

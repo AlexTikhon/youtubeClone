@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-import { VIDEO_VISIBILITIES } from '@youtube-clone/types';
+import {
+  PLAYLIST_VISIBILITIES,
+  VIDEO_VISIBILITIES,
+} from '@youtube-clone/types';
 
 export const createVideoSchema = z.object({
   title: z.string().trim().min(1).max(120),
@@ -49,3 +52,46 @@ export const cursorPaginationSchema = z.object({
 });
 
 export type CursorPaginationInput = z.infer<typeof cursorPaginationSchema>;
+
+export const searchQuerySchema = cursorPaginationSchema.extend({
+  q: z
+    .string()
+    .trim()
+    .max(160)
+    .transform((value) => value.replace(/\s+/g, ' '))
+    .pipe(z.string().min(1)),
+});
+export type SearchQueryInput = z.infer<typeof searchQuerySchema>;
+
+export const createPlaylistSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(1_000).optional(),
+  visibility: z.enum(PLAYLIST_VISIBILITIES).default('PRIVATE'),
+});
+export type CreatePlaylistInput = z.infer<typeof createPlaylistSchema>;
+
+export const updatePlaylistSchema = z
+  .object({
+    title: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().max(1_000).nullable().optional(),
+    visibility: z.enum(PLAYLIST_VISIBILITIES).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'At least one editable field is required',
+  });
+export type UpdatePlaylistInput = z.infer<typeof updatePlaylistSchema>;
+
+export const playlistListQuerySchema = cursorPaginationSchema.extend({
+  videoId: z.string().uuid().optional(),
+});
+export type PlaylistListQueryInput = z.infer<typeof playlistListQuerySchema>;
+
+export const updateChannelSchema = z
+  .object({
+    name: z.string().trim().min(1).max(100).optional(),
+    description: z.string().trim().max(1_000).nullable().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'At least one editable field is required',
+  });
+export type UpdateChannelInput = z.infer<typeof updateChannelSchema>;

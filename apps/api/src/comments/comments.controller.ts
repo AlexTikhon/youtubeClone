@@ -24,6 +24,8 @@ import { OptionalSessionGuard } from '../auth/optional-session.guard.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import type { RequestWithContext } from '../infrastructure/http/request-context.js';
 import { ZodBodyPipe } from '../infrastructure/http/zod-body.pipe.js';
+import { RateLimit } from '../infrastructure/http/rate-limit.decorator.js';
+import { RateLimitGuard } from '../infrastructure/http/rate-limit.guard.js';
 import { CommentsService } from './comments.service.js';
 
 @Controller()
@@ -47,7 +49,8 @@ export class CommentsController {
     );
   }
   @Post('videos/:videoId/comments')
-  @UseGuards(SessionGuard)
+  @UseGuards(SessionGuard, RateLimitGuard)
+  @RateLimit({ scope: 'comments', limit: 20, windowSeconds: 60 })
   create(
     @Param('videoId', ParseUUIDPipe) videoId: string,
     @CurrentUser() user: AuthenticatedUser,

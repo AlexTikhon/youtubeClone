@@ -58,12 +58,22 @@ export class ApiExceptionFilter implements ExceptionFilter {
   }
 
   private defaultCode(status: number): string {
-    return status === HttpStatus.NOT_FOUND
-      ? 'ROUTE_NOT_FOUND'
-      : status === HttpStatus.UNAUTHORIZED
-        ? 'AUTH_REQUIRED'
-        : status === HttpStatus.BAD_REQUEST
-          ? 'VALIDATION_FAILED'
-          : 'INTERNAL_ERROR';
+    switch (status) {
+      case HttpStatus.BAD_REQUEST:
+      case HttpStatus.UNPROCESSABLE_ENTITY:
+        return 'VALIDATION_FAILED';
+      case HttpStatus.UNAUTHORIZED:
+        return 'AUTH_REQUIRED';
+      case HttpStatus.FORBIDDEN:
+        return 'FORBIDDEN';
+      case HttpStatus.NOT_FOUND:
+        return 'ROUTE_NOT_FOUND';
+      case HttpStatus.CONFLICT:
+        return 'CONFLICT';
+      case HttpStatus.TOO_MANY_REQUESTS:
+        return 'RATE_LIMITED';
+      default:
+        return 'INTERNAL_ERROR';
+    }
   }
 }

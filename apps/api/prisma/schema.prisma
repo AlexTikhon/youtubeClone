@@ -35,6 +35,16 @@ enum UploadStatus {
   COMPLETED
 }
 
+enum PlaylistVisibility {
+  PRIVATE
+  PUBLIC
+}
+
+enum PlaylistType {
+  STANDARD
+  WATCH_LATER
+}
+
 model User {
   id           String        @id @default(uuid()) @db.Uuid
   email        String        @unique @db.VarChar(320)
@@ -50,6 +60,7 @@ model User {
   subscriptions Subscription[] @relation("SubscriberSubscriptions")
   videoViews   VideoView[]
   watchHistory WatchHistory[]
+  playlists    Playlist[]
 }
 
 model AuthSession {
@@ -101,6 +112,7 @@ model Video {
   comments        Comment[]
   views           VideoView[]
   watchHistory    WatchHistory[]
+  playlistItems   PlaylistItem[]
 
   @@index([channelId, createdAt(sort: Desc)])
   @@index([status, updatedAt])
@@ -202,4 +214,32 @@ model VideoAsset {
 
   @@unique([bucket, objectKey])
   @@index([videoId, kind])
+}
+
+model Playlist {
+  id          String             @id @default(uuid()) @db.Uuid
+  ownerId     String             @db.Uuid
+  title       String             @db.VarChar(120)
+  description String?            @db.VarChar(1000)
+  visibility  PlaylistVisibility @default(PRIVATE)
+  type        PlaylistType       @default(STANDARD)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  owner       User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  items       PlaylistItem[]
+
+  @@index([ownerId, updatedAt(sort: Desc), id(sort: Desc)])
+}
+
+model PlaylistItem {
+  playlistId String   @db.Uuid
+  videoId    String   @db.Uuid
+  position   Int
+  addedAt    DateTime @default(now())
+  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  video      Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@id([playlistId, videoId])
+  @@unique([playlistId, position])
+  @@index([videoId])
 }

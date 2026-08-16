@@ -43,6 +43,11 @@ export function assertVideoTransition(
 export const VIDEO_VISIBILITIES = ['PRIVATE', 'UNLISTED', 'PUBLIC'] as const;
 export type VideoVisibility = (typeof VIDEO_VISIBILITIES)[number];
 
+export const PLAYLIST_VISIBILITIES = ['PRIVATE', 'PUBLIC'] as const;
+export type PlaylistVisibility = (typeof PLAYLIST_VISIBILITIES)[number];
+export const PLAYLIST_TYPES = ['STANDARD', 'WATCH_LATER'] as const;
+export type PlaylistType = (typeof PLAYLIST_TYPES)[number];
+
 export interface ApiErrorDetail {
   code: string;
   message: string;
@@ -107,6 +112,30 @@ export interface VideoCardDto {
   publishedAt: string;
 }
 
+export interface PlaylistSummaryDto {
+  id: string;
+  title: string;
+  description: string | null;
+  visibility: PlaylistVisibility;
+  type: PlaylistType;
+  videoCount: number;
+  coverThumbnailUrl: string | null;
+  updatedAt: string;
+  containsVideo: boolean;
+}
+
+export interface PlaylistDetailDto {
+  id: string;
+  title: string;
+  description: string | null;
+  visibility: PlaylistVisibility;
+  type: PlaylistType;
+  owner: { id: string; username: string };
+  ownedByCurrentUser: boolean;
+  videoCount: number;
+  videos: Array<{ position: number; addedAt: string; video: VideoCardDto }>;
+}
+
 /** @deprecated Use the purpose-built owner/card DTOs. */
 export type VideoSummary = OwnerVideoDto;
 /** @deprecated Use VideoCardDto. */
@@ -115,6 +144,7 @@ export type PublicVideoSummary = VideoCardDto;
 export interface WatchVideoDto {
   id: string;
   title: string;
+  visibility: VideoVisibility;
   description: string | null;
   durationSeconds: number;
   playbackUrl: string;

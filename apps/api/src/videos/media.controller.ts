@@ -42,6 +42,8 @@ export class MediaController {
       request.user?.id,
       this.environment.S3_BUCKET_THUMBNAILS,
       `videos/${videoId}/thumbnail/thumbnail.jpg`,
+      'immutable',
+      request,
       response,
     );
   }
@@ -65,6 +67,8 @@ export class MediaController {
       request.user?.id,
       this.environment.S3_BUCKET_STREAMS,
       `videos/${videoId}/hls/${rendition}/${fileName}`,
+      fileName.endsWith('.ts') ? 'immutable' : 'manifest',
+      request,
       response,
     );
   }
@@ -74,15 +78,26 @@ export class MediaController {
     ownerId: string | undefined,
     bucket: string,
     objectKey: string,
+    publicCache: 'immutable' | 'manifest',
+    request: RequestWithContext,
     response: Response,
   ): Promise<void> {
-    await this.videos.assertMediaAccess(videoId, ownerId);
+    const access = await this.videos.assertMediaAccess(videoId, ownerId);
     try {
       const object = await this.storage.getObject(bucket, objectKey);
       response.setHeader('content-type', object.contentType);
-      response.setHeader('cache-control', 'private, max-age=60');
+      response.setHeader(
+        'cache-control',
+        access.visibility === 'PUBLIC'
+          ? publicCache === 'immutable'
+            ? 'public, max-age=31536000, immutable'
+            : 'public, max-age=300'
+          : 'private, no-store',
+      );
       if (object.sizeBytes !== null)
         response.setHeader('content-length', object.sizeBytes);
+      request.once('aborted', () => object.body.destroy());
+      object.body.once('error', () => response.destroy());
       object.body.pipe(response);
     } catch {
       throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);

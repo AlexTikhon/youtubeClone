@@ -7,6 +7,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import type { Readable } from 'node:stream';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Inject, Injectable } from '@nestjs/common';
 
@@ -73,7 +74,7 @@ export class S3StorageAdapter implements ObjectStorage {
     if (!result.Body || !('pipe' in result.Body))
       throw new Error('Object response is not a Node.js stream');
     return {
-      body: result.Body as NodeJS.ReadableStream,
+      body: result.Body as Readable,
       contentType: result.ContentType ?? 'application/octet-stream',
       sizeBytes: result.ContentLength ?? null,
     };

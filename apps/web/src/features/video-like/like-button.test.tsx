@@ -12,6 +12,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 const video: WatchVideoDto = {
   id: 'video-1',
   title: 'Test',
+  visibility: 'PUBLIC',
   description: null,
   durationSeconds: 60,
   playbackUrl: '/stream',

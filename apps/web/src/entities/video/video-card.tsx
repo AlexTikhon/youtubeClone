@@ -7,10 +7,25 @@ import {
   formatRelativeDate,
 } from '@/shared/format/format';
 
-export function VideoCard({ video }: { video: VideoCardDto }) {
+export function VideoCard({
+  video,
+  watchHref,
+  horizontal = false,
+}: {
+  video: VideoCardDto;
+  watchHref?: string;
+  horizontal?: boolean;
+}) {
+  const href = watchHref ?? `/watch/${video.id}`;
   return (
-    <article className="group min-w-0">
-      <Link href={`/watch/${video.id}`}>
+    <article
+      className={
+        horizontal
+          ? 'group grid min-w-0 gap-4 sm:grid-cols-[20rem_1fr]'
+          : 'group min-w-0'
+      }
+    >
+      <Link href={href}>
         <div className="relative aspect-video overflow-hidden rounded-xl bg-zinc-800">
           {video.thumbnailUrl && (
             <img
@@ -23,15 +38,25 @@ export function VideoCard({ video }: { video: VideoCardDto }) {
             {formatDuration(video.durationSeconds)}
           </span>
         </div>
-        <h2 className="mt-3 line-clamp-2 font-semibold leading-snug group-hover:text-red-300">
+        <h2
+          className={`${horizontal ? 'mt-3 sm:hidden' : 'mt-3'} line-clamp-2 font-semibold leading-snug group-hover:text-red-300`}
+        >
           {video.title}
         </h2>
       </Link>
-      <div className="mt-2 flex gap-3">
+      <div className={horizontal ? 'flex gap-3 sm:mt-1' : 'mt-2 flex gap-3'}>
         <div className="grid size-9 shrink-0 place-items-center rounded-full bg-zinc-700 text-sm">
           {video.channel.name.slice(0, 1).toUpperCase()}
         </div>
         <div>
+          {horizontal && (
+            <Link
+              className="mb-2 hidden text-lg font-semibold hover:text-red-300 sm:block"
+              href={href}
+            >
+              {video.title}
+            </Link>
+          )}
           <Link
             className="block text-sm text-zinc-400 hover:text-white"
             href={`/channel/${video.channel.handle}`}

@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { z } from 'zod';
 
 import { PrismaService } from '../infrastructure/database/prisma.service.js';
 import { decodeCursor, encodeCursor } from '../infrastructure/http/cursor.js';
@@ -9,6 +10,10 @@ interface HistoryCursor {
   date: string;
   id: string;
 }
+const historyCursorSchema = z.object({
+  date: z.string().datetime(),
+  id: z.string().uuid(),
+});
 
 @Injectable()
 export class HistoryService {
@@ -56,7 +61,9 @@ export class HistoryService {
   }
 
   async list(userId: string, cursor: string | undefined, limit: number) {
-    const after = cursor ? decodeCursor<HistoryCursor>(cursor) : undefined;
+    const after = cursor
+      ? decodeCursor<HistoryCursor>(cursor, historyCursorSchema)
+      : undefined;
     const rows = await this.prisma.watchHistory.findMany({
       where: {
         userId,

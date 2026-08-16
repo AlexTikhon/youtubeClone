@@ -13,7 +13,7 @@ export interface StoredObjectMetadata {
 }
 
 export interface StoredObject {
-  body: NodeJS.ReadableStream;
+  body: Readable;
   contentType: string;
   sizeBytes: number | null;
 }
@@ -25,3 +25,4 @@ export interface ObjectStorage {
   deleteObject(bucket: string, objectKey: string): Promise<void>;
   deletePrefix(bucket: string, prefix: string): Promise<void>;
 }
+import type { Readable } from 'node:stream';

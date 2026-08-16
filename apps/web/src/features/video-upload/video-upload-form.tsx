@@ -12,6 +12,7 @@ import type {
 
 import { apiRequest } from '@/shared/api/api-client';
 import { uploadFile } from '@/shared/upload/upload-file';
+import { queryKeys } from '@/shared/query/query-keys';
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
@@ -42,7 +43,7 @@ export function VideoUploadForm() {
   const abortController = useRef<AbortController | null>(null);
 
   const video = useQuery({
-    queryKey: ['video', context?.videoId],
+    queryKey: queryKeys.ownerVideo(context?.videoId),
     queryFn: () =>
       apiRequest<OwnerVideoDto>(`/api/v1/videos/${context!.videoId}/owner`),
     enabled: Boolean(context?.videoId),

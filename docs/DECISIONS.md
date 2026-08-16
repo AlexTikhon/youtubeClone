@@ -64,3 +64,31 @@ The local deployment performs storage cleanup synchronously behind `DELETING` in
 second queue. Cleanup is idempotent and retryable. Worker checks before upload and at commit, with
 generated-prefix cleanup after a lost completion claim. A failed request can leave a pending-deletion
 row, which is safer than exposing a READY row whose media was partially removed.
+
+## PostgreSQL search instead of a search service
+
+The current scale does not justify Elasticsearch-class infrastructure. A database trigger builds a
+weighted English `tsvector` from video title (A), channel name/handle (B), and description (C), and a
+partial GIN index covers only READY/PUBLIC videos. `websearch_to_tsquery` provides useful user query
+semantics. Text rank is multiplied so capped popularity and recency remain tie-breakers rather than
+turning search into the Home feed.
+
+Search rank is rounded to six decimal places and the opaque cursor stores rank, publication time,
+and ID. This makes page order deterministic for a stable database state. View-count changes can move
+an item between requests; immutable search snapshots are deliberately out of scope.
+
+## Playlists and Watch Later
+
+Watch Later is a `Playlist` with explicit `WATCH_LATER` type, not a magic title or separate table.
+A partial unique index guarantees at most one per owner. It is fixed, PRIVATE, and cannot be edited
+or deleted. Playlist items use `(playlistId, videoId)` identity and a unique explicit position. An
+advisory transaction lock serializes position allocation for a playlist. The 200-item bound keeps
+detail reads and ordering operations predictable without premature reorder UI.
+
+## Cache and abuse policy
+
+No Redis DTO cache was added. The likely read models have broad invalidation requirements and the
+local workload does not demonstrate a latency need. Redis does enforce small distributed
+fixed-window limits on login, comments, qualified-view writes, and public search; media routes are
+excluded. Public VOD segments and thumbnails are immutable and receive long-lived HTTP cache
+headers, manifests receive a short public TTL, and PRIVATE/UNLISTED bytes are never publicly cached.

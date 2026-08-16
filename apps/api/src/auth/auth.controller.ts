@@ -18,6 +18,8 @@ import { API_ENVIRONMENT } from '../config/config.module.js';
 import { AppError } from '../infrastructure/http/app-error.js';
 import type { RequestWithContext } from '../infrastructure/http/request-context.js';
 import { ZodBodyPipe } from '../infrastructure/http/zod-body.pipe.js';
+import { RateLimit } from '../infrastructure/http/rate-limit.decorator.js';
+import { RateLimitGuard } from '../infrastructure/http/rate-limit.guard.js';
 import { CurrentUser } from './current-user.decorator.js';
 import type { AuthenticatedUser } from './auth.types.js';
 import { readCookie } from './cookie.js';
@@ -32,6 +34,8 @@ export class AuthController {
   ) {}
 
   @Post('login')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ scope: 'login', limit: 10, windowSeconds: 300 })
   async login(
     @Body(new ZodBodyPipe(loginSchema)) input: LoginInput,
     @Res({ passthrough: true }) response: Response,

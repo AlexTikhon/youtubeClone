@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { z } from 'zod';
 import { PrismaService } from '../infrastructure/database/prisma.service.js';
 import { decodeCursor, encodeCursor } from '../infrastructure/http/cursor.js';
 import { VideosService } from '../videos/videos.service.js';
@@ -14,6 +15,16 @@ interface DateIdCursor {
   date: string;
   id: string;
 }
+const feedCursorSchema = z.object({
+  asOf: z.string().datetime(),
+  score: z.number().finite(),
+  publishedAt: z.string().datetime(),
+  id: z.string().uuid(),
+});
+const dateIdCursorSchema = z.object({
+  date: z.string().datetime(),
+  id: z.string().uuid(),
+});
 
 @Injectable()
 export class FeedsService {
@@ -27,7 +38,9 @@ export class FeedsService {
     cursor: string | undefined,
     limit: number,
   ) {
-    const decoded = cursor ? decodeCursor<FeedCursor>(cursor) : undefined;
+    const decoded = cursor
+      ? decodeCursor<FeedCursor>(cursor, feedCursorSchema)
+      : undefined;
     const asOf = decoded ? new Date(decoded.asOf) : new Date();
     const commonWhere = {
       status: 'READY' as const,
@@ -148,7 +161,9 @@ export class FeedsService {
     cursor: string | undefined,
     limit: number,
   ) {
-    const after = cursor ? decodeCursor<DateIdCursor>(cursor) : undefined;
+    const after = cursor
+      ? decodeCursor<DateIdCursor>(cursor, dateIdCursorSchema)
+      : undefined;
     const rows = await this.prisma.video.findMany({
       where: {
         status: 'READY',

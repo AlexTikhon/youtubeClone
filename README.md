@@ -1,8 +1,9 @@
 # YouTubeClone
 
 An educational, production-minded video platform. Phase 1 provides the real direct-upload/FFmpeg/HLS
-pipeline. Phase 2 adds channels, likes, comments, subscriptions, qualified views, watch history,
-ranked discovery, subscription feeds, and creator Studio without replacing those foundations.
+pipeline. Phase 2 adds channels, social/watch state, ranked feeds, and creator Studio. Phase 3
+completes the product with PostgreSQL full-text search, related videos, playlists, Watch Later,
+channel settings, production hardening, and browser-level tests without replacing those foundations.
 
 ## Prerequisites
 
@@ -50,7 +51,8 @@ defaults to one because transcoding is CPU- and memory-heavy.
 login -> create owned draft -> signed PUT -> MinIO original -> complete
       -> BullMQ -> ffprobe -> thumbnail + 720p-bounded HLS -> READY
       -> public home card -> watch page -> native HLS / hls.js
-      -> qualified view + progress -> like/comment/subscribe -> history/feed
+      -> qualified view + progress -> like/comment/subscribe/save -> history/feed/playlists
+      -> search -> related video or playlist-context playback
 ```
 
 Only MP4 uploads are accepted, with a 2 GB default limit. The browser MIME/size checks are
@@ -65,6 +67,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm format:check
+pnpm test:e2e
 ```
 
 Infrastructure-backed tests remain explicit:
@@ -73,6 +76,14 @@ Infrastructure-backed tests remain explicit:
 $env:RUN_INTEGRATION_TESTS='true'; pnpm --filter @youtube-clone/api test:integration
 ```
 
+The fast Playwright flow expects migrated, seeded local infrastructure. It does not wait for
+transcoding. The real upload/FFmpeg/HLS browser flow is deliberately separate:
+
+```powershell
+$null = docker compose --profile media up -d --build worker
+$env:RUN_MEDIA_E2E='true'; pnpm test:e2e:media
+```
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/VIDEO_PIPELINE.md](docs/VIDEO_PIPELINE.md),
 and [docs/DECISIONS.md](docs/DECISIONS.md) for boundaries, retry behavior, pagination, ranking,
-view/history policy, and deletion concurrency trade-offs.
+search, playlists, cache policy, view/history policy, and deletion concurrency trade-offs.

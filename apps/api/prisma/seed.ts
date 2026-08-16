@@ -73,6 +73,67 @@ async function main() {
     }
   }
 
+  const demoChannel = demoUsers[0]?.channel;
+  if (demoChannel) {
+    const demoVideoId = '11111111-1111-4111-8111-111111111111';
+    await prisma.video.upsert({
+      where: { id: demoVideoId },
+      update: {
+        channelId: demoChannel.id,
+        title: 'React Architecture in Practice',
+        description: 'A seeded READY video for fast product and browser tests.',
+        status: 'READY',
+        visibility: 'PUBLIC',
+        durationSeconds: 90,
+        publishedAt: new Date('2026-08-15T10:00:00Z'),
+      },
+      create: {
+        id: demoVideoId,
+        channelId: demoChannel.id,
+        title: 'React Architecture in Practice',
+        description: 'A seeded READY video for fast product and browser tests.',
+        status: 'READY',
+        visibility: 'PUBLIC',
+        durationSeconds: 90,
+        publishedAt: new Date('2026-08-15T10:00:00Z'),
+      },
+    });
+    await Promise.all([
+      prisma.videoAsset.upsert({
+        where: {
+          bucket_objectKey: {
+            bucket: 'video-thumbnails',
+            objectKey: `fixtures/${demoVideoId}/thumbnail.jpg`,
+          },
+        },
+        create: {
+          videoId: demoVideoId,
+          kind: 'THUMBNAIL',
+          bucket: 'video-thumbnails',
+          objectKey: `fixtures/${demoVideoId}/thumbnail.jpg`,
+          mimeType: 'image/jpeg',
+        },
+        update: {},
+      }),
+      prisma.videoAsset.upsert({
+        where: {
+          bucket_objectKey: {
+            bucket: 'video-streams',
+            objectKey: `fixtures/${demoVideoId}/index.m3u8`,
+          },
+        },
+        create: {
+          videoId: demoVideoId,
+          kind: 'HLS_MANIFEST',
+          bucket: 'video-streams',
+          objectKey: `fixtures/${demoVideoId}/index.m3u8`,
+          mimeType: 'application/vnd.apple.mpegurl',
+        },
+        update: {},
+      }),
+    ]);
+  }
+
   console.log(
     JSON.stringify({
       event: 'development.seed.completed',

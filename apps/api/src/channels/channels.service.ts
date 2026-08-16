@@ -1,5 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { ChannelDto, SubscriptionStateDto } from '@youtube-clone/types';
+import type { UpdateChannelInput } from '@youtube-clone/validation';
+import { z } from 'zod';
 
 import { PrismaService } from '../infrastructure/database/prisma.service.js';
 import { AppError } from '../infrastructure/http/app-error.js';
@@ -45,6 +47,47 @@ export class ChannelsService {
     };
   }
 
+  async getMine(userId: string): Promise<ChannelDto> {
+    const channel = await this.prisma.channel.findUnique({
+      where: { ownerId: userId },
+      include: { _count: { select: { subscriptions: true } } },
+    });
+    if (!channel)
+      throw new AppError('CHANNEL_NOT_FOUND', 'Channel was not found', 404);
+    return {
+      id: channel.id,
+      handle: channel.handle,
+      name: channel.name,
+      description: channel.description,
+      avatarUrl: channel.avatarUrl,
+      subscribersCount: channel._count.subscriptions,
+      subscribedByCurrentUser: false,
+      ownedByCurrentUser: true,
+    };
+  }
+
+  async updateMine(
+    userId: string,
+    input: UpdateChannelInput,
+  ): Promise<ChannelDto> {
+    const existing = await this.prisma.channel.findUnique({
+      where: { ownerId: userId },
+      select: { id: true },
+    });
+    if (!existing)
+      throw new AppError('CHANNEL_NOT_FOUND', 'Channel was not found', 404);
+    await this.prisma.channel.update({
+      where: { id: existing.id },
+      data: {
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.description === undefined
+          ? {}
+          : { description: input.description }),
+      },
+    });
+    return this.getMine(userId);
+  }
+
   async videosForChannel(
     handleInput: string,
     cursor: string | undefined,
@@ -66,7 +109,10 @@ export class ChannelsService {
     limit: number,
   ) {
     const after = cursor
-      ? decodeCursor<{ date: string; id: string }>(cursor)
+      ? decodeCursor(
+          cursor,
+          z.object({ date: z.string().datetime(), id: z.string().uuid() }),
+        )
       : undefined;
     const rows = await this.prisma.video.findMany({
       where: {

@@ -5,6 +5,7 @@ import { ConfigurationModule } from './config/config.module.js';
 import { HealthModule } from './health/health.module.js';
 import { DatabaseModule } from './infrastructure/database/database.module.js';
 import { RequestIdMiddleware } from './infrastructure/http/request-id.middleware.js';
+import { HttpInfrastructureModule } from './infrastructure/http/http-infrastructure.module.js';
 import { QueueModule } from './infrastructure/queue/queue.module.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
@@ -15,6 +16,8 @@ import { CommentsModule } from './comments/comments.module.js';
 import { FeedsModule } from './feeds/feeds.module.js';
 import { HistoryModule } from './history/history.module.js';
 import { ReactionsModule } from './reactions/reactions.module.js';
+import { SearchModule } from './search/search.module.js';
+import { PlaylistsModule } from './playlists/playlists.module.js';
 
 @Module({
   imports: [
@@ -22,6 +25,7 @@ import { ReactionsModule } from './reactions/reactions.module.js';
     AuthModule,
     DatabaseModule,
     RedisModule,
+    HttpInfrastructureModule,
     StorageModule,
     QueueModule,
     HealthModule,
@@ -31,6 +35,8 @@ import { ReactionsModule } from './reactions/reactions.module.js';
     FeedsModule,
     HistoryModule,
     ReactionsModule,
+    SearchModule,
+    PlaylistsModule,
   ],
 })
 export class AppModule implements NestModule {
