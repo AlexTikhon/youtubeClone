@@ -26,7 +26,24 @@ export function StudioVideos() {
         `/api/v1/studio/videos?limit=20${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
       ),
     getNextPageParam: (page) => page.page.nextCursor ?? undefined,
+    refetchInterval: (query) =>
+      query.state.data?.pages.some((page) =>
+        page.data.some((video) =>
+          ['UPLOADED', 'PROCESSING'].includes(video.status),
+        ),
+      )
+        ? 2_000
+        : false,
     retry: false,
+  });
+  const retryProcessing = useMutation({
+    mutationFn: (id: string) =>
+      apiRequest(`/api/v1/videos/${id}/retry-processing`, {
+        method: 'POST',
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['studio', 'videos'] });
+    },
   });
   const remove = useMutation({
     mutationFn: (id: string) =>
@@ -87,18 +104,42 @@ export function StudioVideos() {
                 {video.status} · {video.visibility} ·{' '}
                 {formatRelativeDate(video.createdAt)}
               </p>
+              <p className="mt-2 text-xs text-zinc-500">
+                Generation {video.processingGeneration} · updated{' '}
+                {formatRelativeDate(video.updatedAt)}
+              </p>
               <p className="mt-2 text-sm text-zinc-500">
                 {formatCount(video.viewsCount)} views ·{' '}
                 {formatCount(video.likesCount)} likes ·{' '}
                 {formatCount(video.commentsCount)} comments
               </p>
-              {video.failureReason && (
-                <p className="mt-2 text-sm text-red-400">
-                  {video.failureReason}
-                </p>
+              {video.status === 'FAILED' && (
+                <div className="mt-3 text-sm text-red-400">
+                  <p className="font-semibold">Processing failed</p>
+                  <p>
+                    {video.failureReason ?? 'The video could not be processed.'}
+                  </p>
+                  {retryProcessing.isError &&
+                    retryProcessing.variables === video.id && (
+                      <p className="mt-2">{retryProcessing.error.message}</p>
+                    )}
+                </div>
               )}
             </div>
             <div className="flex gap-3 sm:flex-col">
+              {video.status === 'FAILED' && (
+                <button
+                  className="rounded bg-red-600 px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
+                  disabled={retryProcessing.isPending}
+                  onClick={() => retryProcessing.mutate(video.id)}
+                  type="button"
+                >
+                  {retryProcessing.isPending &&
+                  retryProcessing.variables === video.id
+                    ? 'Retrying…'
+                    : 'Retry processing'}
+                </button>
+              )}
               <button
                 className="rounded border border-zinc-700 px-3 py-1.5 text-sm"
                 onClick={() => setEditing(video)}

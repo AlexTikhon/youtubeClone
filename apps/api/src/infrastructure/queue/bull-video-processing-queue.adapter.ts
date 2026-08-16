@@ -10,6 +10,7 @@ import {
 
 import { API_ENVIRONMENT } from '../../config/config.module.js';
 import type { VideoProcessingQueue } from './video-processing-queue.port.js';
+import { processingJobId } from './video-processing-queue.port.js';
 
 @Injectable()
 export class BullVideoProcessingQueueAdapter
@@ -31,7 +32,7 @@ export class BullVideoProcessingQueueAdapter
 
   async enqueue(job: ProcessVideoJob): Promise<void> {
     await this.queue.add('process-video', job, {
-      jobId: `video-${job.videoId}`,
+      jobId: processingJobId(job),
     });
   }
 

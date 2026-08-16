@@ -10,6 +10,11 @@ const privateVideo = {
   visibility: 'PRIVATE' as const,
   durationSeconds: 30,
   publishedAt: null,
+  processingGeneration: 1,
+  processingStartedAt: null,
+  processingFinishedAt: null,
+  createdAt: new Date('2026-01-01T00:00:00Z'),
+  updatedAt: new Date('2026-01-01T00:00:00Z'),
   channel: {
     id: 'channel-id',
     name: 'Owner',
@@ -166,5 +171,135 @@ describe('VideosService authorization and publishing', () => {
       service.update(privateVideo.id, 'owner-id', { visibility: 'PUBLIC' }),
     ).resolves.toMatchObject({ publishedAt: createdAt.toISOString() });
     expect(prisma.video.update).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('VideosService processing retry', () => {
+  const failedVideo = {
+    id: privateVideo.id,
+    status: 'FAILED' as const,
+    processingGeneration: 1,
+    assets: [
+      {
+        id: 'original-id',
+        kind: 'ORIGINAL',
+        bucket: 'originals',
+        objectKey: 'originals/video/file.mp4',
+        mimeType: 'video/mp4',
+        sizeBytes: 100n,
+      },
+    ],
+  };
+
+  function createRetryService(video = failedVideo) {
+    const transaction = {
+      video: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      processingOutbox: { create: vi.fn().mockResolvedValue({}) },
+    };
+    const prisma = {
+      video: { findFirst: vi.fn().mockResolvedValue(video) },
+      $transaction: vi.fn(
+        async (callback: (input: typeof transaction) => Promise<void>) =>
+          callback(transaction),
+      ),
+    };
+    const storage = {
+      headObject: vi.fn().mockResolvedValue({
+        contentType: 'video/mp4',
+        sizeBytes: 100n,
+      }),
+    };
+    return {
+      service: new VideosService(
+        prisma as never,
+        storage as never,
+        {} as never,
+      ),
+      prisma,
+      storage,
+      transaction,
+    };
+  }
+
+  it('atomically increments the generation and writes an outbox event', async () => {
+    const { service, transaction } = createRetryService();
+    await expect(
+      service.retryProcessing(failedVideo.id, 'owner-id', 'request-id'),
+    ).resolves.toEqual({
+      videoId: failedVideo.id,
+      status: 'PROCESSING',
+      processingGeneration: 2,
+    });
+    expect(transaction.video.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'FAILED',
+          processingGeneration: 1,
+        }),
+        data: expect.objectContaining({
+          status: 'PROCESSING',
+          processingGeneration: 2,
+        }),
+      }),
+    );
+    expect(transaction.processingOutbox.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        generation: 2,
+        originalAssetId: 'original-id',
+      }),
+    });
+  });
+
+  it.each(['READY', 'PROCESSING', 'DELETING'] as const)(
+    'rejects retry from %s',
+    async (status) => {
+      const { service, transaction } = createRetryService({
+        ...failedVideo,
+        status,
+      } as never);
+      await expect(
+        service.retryProcessing(failedVideo.id, 'owner-id', 'request-id'),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(transaction.processingOutbox.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a missing ORIGINAL asset', async () => {
+    const { service } = createRetryService({
+      ...failedVideo,
+      assets: [],
+    });
+    await expect(
+      service.retryProcessing(failedVideo.id, 'owner-id', 'request-id'),
+    ).rejects.toMatchObject({ code: 'VIDEO_ORIGINAL_MISSING', status: 409 });
+  });
+
+  it('rejects a missing original storage object', async () => {
+    const { service, storage } = createRetryService();
+    storage.headObject.mockRejectedValueOnce(new Error('not found'));
+    await expect(
+      service.retryProcessing(failedVideo.id, 'owner-id', 'request-id'),
+    ).rejects.toMatchObject({
+      code: 'VIDEO_ORIGINAL_OBJECT_MISSING',
+      status: 409,
+    });
+  });
+
+  it('allows exactly one of two concurrent retry claims', async () => {
+    const { service, transaction } = createRetryService();
+    transaction.video.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    const results = await Promise.allSettled([
+      service.retryProcessing(failedVideo.id, 'owner-id', 'request-a'),
+      service.retryProcessing(failedVideo.id, 'owner-id', 'request-b'),
+    ]);
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === 'rejected'),
+    ).toHaveLength(1);
+    expect(transaction.processingOutbox.create).toHaveBeenCalledTimes(1);
   });
 });

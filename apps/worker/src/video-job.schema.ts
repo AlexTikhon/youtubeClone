@@ -4,5 +4,6 @@ export const processVideoJobSchema = z.object({
   schemaVersion: z.literal(1),
   videoId: z.string().uuid(),
   originalAssetId: z.string().uuid(),
+  generation: z.number().int().positive(),
   correlationId: z.string().min(1).max(100),
 });

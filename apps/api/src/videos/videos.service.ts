@@ -108,6 +108,117 @@ export class VideosService {
     return this.toOwnerDto(video);
   }
 
+  async retryProcessing(
+    videoId: string,
+    ownerId: string,
+    correlationId: string,
+  ): Promise<{
+    videoId: string;
+    status: 'PROCESSING';
+    processingGeneration: number;
+  }> {
+    const video = await this.prisma.video.findFirst({
+      where: { id: videoId, channel: { ownerId } },
+      include: {
+        assets: { where: { kind: 'ORIGINAL' } },
+      },
+    });
+    if (!video)
+      throw new AppError('VIDEO_NOT_FOUND', 'Video was not found', 404);
+    if (video.status !== 'FAILED') {
+      throw new AppError(
+        'VIDEO_PROCESSING_RETRY_NOT_ALLOWED',
+        'Only failed video processing can be retried',
+        409,
+      );
+    }
+    if (video.assets.length !== 1) {
+      throw new AppError(
+        'VIDEO_ORIGINAL_MISSING',
+        'The original video is no longer available for processing',
+        409,
+      );
+    }
+    const original = video.assets[0]!;
+    if (
+      original.sizeBytes === null ||
+      original.sizeBytes <= 0n ||
+      original.mimeType.trim().length === 0
+    ) {
+      throw new AppError(
+        'VIDEO_ORIGINAL_INVALID',
+        'The original video metadata is not valid for processing',
+        409,
+      );
+    }
+    let stored;
+    try {
+      stored = await this.storage.headObject(
+        original.bucket,
+        original.objectKey,
+      );
+    } catch {
+      throw new AppError(
+        'VIDEO_ORIGINAL_OBJECT_MISSING',
+        'The original video object is no longer available',
+        409,
+      );
+    }
+    if (
+      stored.sizeBytes === null ||
+      stored.sizeBytes !== original.sizeBytes ||
+      stored.contentType.toLowerCase() !== original.mimeType.toLowerCase()
+    ) {
+      throw new AppError(
+        'VIDEO_ORIGINAL_INVALID',
+        'The stored original no longer matches its verified metadata',
+        409,
+      );
+    }
+
+    assertVideoTransition(video.status, 'PROCESSING');
+    const generation = video.processingGeneration + 1;
+    await this.prisma.$transaction(async (transaction) => {
+      const claimed = await transaction.video.updateMany({
+        where: {
+          id: video.id,
+          status: 'FAILED',
+          processingGeneration: video.processingGeneration,
+        },
+        data: {
+          status: 'PROCESSING',
+          processingGeneration: generation,
+          processingStartedAt: null,
+          processingFinishedAt: null,
+          failureReason: null,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new AppError(
+          'VIDEO_PROCESSING_RETRY_ALREADY_ACCEPTED',
+          'A processing retry was already accepted',
+          409,
+        );
+      }
+      await transaction.processingOutbox.create({
+        data: {
+          videoId: video.id,
+          generation,
+          originalAssetId: original.id,
+          correlationId,
+        },
+      });
+    });
+    this.logger.log({
+      event: 'video.processing.retry_requested',
+      videoId,
+      generation,
+      correlationId,
+      ownerId,
+    });
+    return { videoId, status: 'PROCESSING', processingGeneration: generation };
+  }
+
   async listOwned(ownerId: string, cursor: string | undefined, limit: number) {
     const after = cursor
       ? decodeCursor<DateIdCursor>(cursor, dateIdCursorSchema)
@@ -298,11 +409,11 @@ export class VideosService {
         ),
         this.storage.deletePrefix(
           this.environment.S3_BUCKET_STREAMS,
-          `videos/${video.id}/hls/`,
+          `videos/${video.id}/`,
         ),
         this.storage.deletePrefix(
           this.environment.S3_BUCKET_THUMBNAILS,
-          `videos/${video.id}/thumbnail/`,
+          `videos/${video.id}/`,
         ),
       ]);
       await this.prisma.video.delete({ where: { id: video.id } });
@@ -393,6 +504,21 @@ export class VideosService {
     return this.assertWatchAccess(videoId, ownerId);
   }
 
+  async resolveMediaAsset(
+    videoId: string,
+    ownerId: string | undefined,
+    kind: 'THUMBNAIL' | 'HLS_MANIFEST',
+  ) {
+    const access = await this.assertMediaAccess(videoId, ownerId);
+    const asset = await this.prisma.videoAsset.findFirst({
+      where: { videoId, kind },
+      select: { bucket: true, objectKey: true },
+    });
+    if (!asset)
+      throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);
+    return { ...asset, visibility: access.visibility };
+  }
+
   private toOwnerDto(video: OwnerVideoRecord): OwnerVideoDto {
     return {
       id: video.id,
@@ -404,6 +530,10 @@ export class VideosService {
       width: video.width,
       height: video.height,
       failureReason: video.failureReason,
+      processingGeneration: video.processingGeneration,
+      processingStartedAt: video.processingStartedAt?.toISOString() ?? null,
+      processingFinishedAt: video.processingFinishedAt?.toISOString() ?? null,
+      updatedAt: video.updatedAt.toISOString(),
       channel: video.channel,
       thumbnailUrl: video.assets.some(
         (asset: { kind: string }) => asset.kind === 'THUMBNAIL',
@@ -444,6 +574,6 @@ export class VideosService {
 }
 
 function playbackUrlForManifest(videoId: string, objectKey: string): string {
-  const isAbrMaster = objectKey === `videos/${videoId}/hls/master.m3u8`;
+  const isAbrMaster = objectKey.endsWith('/master.m3u8');
   return `/api/v1/media/videos/${videoId}/hls/${isAbrMaster ? 'master.m3u8' : '720p/index.m3u8'}`;
 }

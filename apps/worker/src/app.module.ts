@@ -5,6 +5,7 @@ import { VideoWorkerService } from './video-worker.service.js';
 import { DatabaseService } from './database.service.js';
 import { MediaToolsService } from './media-tools.service.js';
 import { StorageService } from './storage.service.js';
+import { WorkerHealthService } from './worker-health.service.js';
 
 @Module({
   providers: [
@@ -13,6 +14,7 @@ import { StorageService } from './storage.service.js';
     MediaToolsService,
     VideoProcessingPipeline,
     VideoWorkerService,
+    WorkerHealthService,
   ],
 })
 export class WorkerModule {}

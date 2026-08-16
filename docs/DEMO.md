@@ -22,9 +22,10 @@ automatically if you want a rehearsal.
    opaque HttpOnly cookie and server-side revocation model.
 3. **Upload an MP4 (90 seconds).** In Studio, create a video and show browser-to-MinIO progress.
    Explain that NestJS issues the signed intent but does not proxy the large request body.
-4. **Watch processing (60 seconds).** Show `UPLOADING -> UPLOADED -> PROCESSING -> READY`. Mention
-   ffprobe as the authority for media validity, deterministic output keys, three BullMQ attempts, and
-   worker concurrency one plus sequential variants locally.
+4. **Watch processing and recovery (90 seconds).** Show
+   `UPLOADING -> UPLOADED -> PROCESSING -> READY`. Use or describe a FAILED row's **Retry processing**
+   action and the generation increment. Mention the transactional outbox, generation-specific job ID,
+   ffprobe authority, three BullMQ attempts per generation, and worker concurrency one locally.
 5. **Play adaptive HLS (45 seconds).** Open the completed video and, if useful, show MinIO's
    `master.m3u8` plus 360p/480p/720p directories. Explain that native HLS or hls.js discovers the
    variant playlists and stays in automatic quality mode; API-mediated authorization covers the
@@ -42,6 +43,7 @@ automatically if you want a rehearsal.
 ## Useful follow-up tabs
 
 - `GET /api/v1/health/ready` for dependency readiness
+- Worker container `GET /health/live` and `/health/ready` on port 4001 for health semantics
 - `docs/VIDEO_PIPELINE.md` for retry/failure sequencing
 - `docs/SEARCH.md` for ranking and query-plan nuance
 - `.github/workflows/ci.yml` for the verification pipeline

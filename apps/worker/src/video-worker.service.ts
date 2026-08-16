@@ -48,11 +48,12 @@ export class VideoWorkerService
     );
     this.worker.on('failed', (job, error) =>
       this.logger.error({
-        event: 'video.processing.failed',
+        event: 'video.processing.bull_job_failed',
         videoId: job?.data.videoId,
         jobId: job?.id,
+        generation: job?.data.generation,
         correlationId: job?.data.correlationId,
-        attempt: job?.attemptsMade,
+        bullAttempt: job?.attemptsMade,
         error: error.message,
       }),
     );
@@ -68,21 +69,35 @@ export class VideoWorkerService
     await this.worker?.close();
   }
 
+  async checkReady(): Promise<void> {
+    if (!this.worker || !this.worker.isRunning())
+      throw new Error('BullMQ worker is not running');
+    await this.worker.waitUntilReady();
+  }
+
   private async process(job: Job<ProcessVideoJob>): Promise<void> {
     const input = processVideoJobSchema.parse(job.data);
     const startedAt = performance.now();
     this.logger.log({
-      event: 'video.processing.received',
+      event: 'video.processing.job_received',
       videoId: input.videoId,
       jobId: job.id,
+      generation: input.generation,
+      bullAttempt: job.attemptsMade + 1,
       correlationId: input.correlationId,
     });
     try {
-      await this.pipeline.execute(job.id ?? 'unknown', input);
+      await this.pipeline.execute(
+        job.id ?? 'unknown',
+        input,
+        job.attemptsMade + 1,
+      );
       this.logger.log({
         event: 'video.processing.completed',
         videoId: input.videoId,
         jobId: job.id,
+        generation: input.generation,
+        bullAttempt: job.attemptsMade + 1,
         correlationId: input.correlationId,
         durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
       });
@@ -92,14 +107,31 @@ export class VideoWorkerService
       const exhausted = job.attemptsMade + 1 >= attempts;
       if (!processingError.retryable) job.discard();
       if (!processingError.retryable || exhausted) {
-        await this.pipeline.fail(input.videoId, processingError.publicReason);
+        const recorded = await this.pipeline.fail(
+          input.videoId,
+          input.generation,
+          processingError.publicReason,
+        );
+        if (recorded) {
+          this.logger.error({
+            event: 'video.processing.failed',
+            videoId: input.videoId,
+            jobId: job.id,
+            generation: input.generation,
+            bullAttempt: job.attemptsMade + 1,
+            correlationId: input.correlationId,
+            durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            reason: processingError.publicReason,
+          });
+        }
       }
       this.logger.warn({
         event: 'video.processing.attempt_failed',
         videoId: input.videoId,
         jobId: job.id,
+        generation: input.generation,
         correlationId: input.correlationId,
-        attempt: job.attemptsMade + 1,
+        bullAttempt: job.attemptsMade + 1,
         attempts,
         retryable: processingError.retryable,
         durationMs: Math.round((performance.now() - startedAt) * 100) / 100,

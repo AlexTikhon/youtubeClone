@@ -45,11 +45,19 @@ Host `pnpm dev` keeps fast reload and expects configured FFmpeg/ffprobe binaries
 pipeline verification. Transcode concurrency defaults to one because video jobs are CPU-heavy and
 ABR multiplies temporary disk and CPU work within each job.
 
-## No implicit reprocessing
+## Explicit failed-processing recovery
 
-`READY -> PROCESSING` and `FAILED -> PROCESSING` were removed because no safe user-facing reprocess
-workflow existed. BullMQ retries remain internal to the original job. A future retry feature must first
-validate the original object and establish a new idempotent job lifecycle.
+`FAILED -> PROCESSING` is allowed only through the owner retry command. The command verifies the
+ORIGINAL database record and MinIO object, compare-and-sets the failed generation, increments it, and
+writes a purpose-specific outbox event in one PostgreSQL transaction. `READY -> PROCESSING` remains
+forbidden because this feature recovers terminal failures rather than replacing healthy published
+media. BullMQ attempts remain internal retries within one generation.
+
+The outbox exists because PostgreSQL state and Redis/BullMQ enqueueing are a dual write with no shared
+transaction. A tiny periodic publisher plus deterministic generation-specific job IDs closes the
+crash window. Kafka was rejected: there is one asynchronous domain pipeline, BullMQ already provides
+delivery and retry behavior, and another distributed system would add more operational cost than
+capability. The outbox is intentionally not generalized beyond video processing.
 
 ## Publishing semantics
 

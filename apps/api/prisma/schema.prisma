@@ -46,77 +46,97 @@ enum PlaylistType {
 }
 
 model User {
-  id           String        @id @default(uuid()) @db.Uuid
-  email        String        @unique @db.VarChar(320)
-  username     String        @unique @db.VarChar(50)
-  passwordHash String        @db.VarChar(255)
-  avatarUrl    String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  channel      Channel?
-  authSessions AuthSession[]
-  likes        VideoLike[]
-  comments     Comment[]
+  id            String         @id @default(uuid()) @db.Uuid
+  email         String         @unique @db.VarChar(320)
+  username      String         @unique @db.VarChar(50)
+  passwordHash  String         @db.VarChar(255)
+  avatarUrl     String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  channel       Channel?
+  authSessions  AuthSession[]
+  likes         VideoLike[]
+  comments      Comment[]
   subscriptions Subscription[] @relation("SubscriberSubscriptions")
-  videoViews   VideoView[]
-  watchHistory WatchHistory[]
-  playlists    Playlist[]
+  videoViews    VideoView[]
+  watchHistory  WatchHistory[]
+  playlists     Playlist[]
 }
 
 model AuthSession {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @db.Uuid
-  tokenHash String   @unique @db.Char(64)
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique @db.Char(64)
   expiresAt DateTime
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   revokedAt DateTime?
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
 }
 
 model Channel {
-  id          String   @id @default(uuid()) @db.Uuid
-  ownerId     String   @unique @db.Uuid
-  handle      String   @unique @db.VarChar(50)
-  name        String   @db.VarChar(100)
-  description String?  @db.VarChar(1000)
-  avatarUrl   String?
-  bannerUrl   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  videos      Video[]
+  id            String         @id @default(uuid()) @db.Uuid
+  ownerId       String         @unique @db.Uuid
+  handle        String         @unique @db.VarChar(50)
+  name          String         @db.VarChar(100)
+  description   String?        @db.VarChar(1000)
+  avatarUrl     String?
+  bannerUrl     String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  owner         User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  videos        Video[]
   subscriptions Subscription[]
 }
 
 model Video {
-  id              String          @id @default(uuid()) @db.Uuid
-  channelId       String          @db.Uuid
-  title           String          @db.VarChar(120)
-  description     String?         @db.VarChar(5000)
-  status          VideoStatus     @default(DRAFT)
-  visibility      VideoVisibility @default(PRIVATE)
-  durationSeconds Int?
-  width           Int?
-  height          Int?
-  publishedAt     DateTime?
-  failureReason   String?         @db.VarChar(500)
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  channel         Channel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  assets          VideoAsset[]
-  upload          VideoUpload?
-  likes           VideoLike[]
-  comments        Comment[]
-  views           VideoView[]
-  watchHistory    WatchHistory[]
-  playlistItems   PlaylistItem[]
+  id                   String             @id @default(uuid()) @db.Uuid
+  channelId            String             @db.Uuid
+  title                String             @db.VarChar(120)
+  description          String?            @db.VarChar(5000)
+  status               VideoStatus        @default(DRAFT)
+  visibility           VideoVisibility    @default(PRIVATE)
+  durationSeconds      Int?
+  width                Int?
+  height               Int?
+  publishedAt          DateTime?
+  failureReason        String?            @db.VarChar(500)
+  processingGeneration Int                @default(0)
+  processingStartedAt  DateTime?
+  processingFinishedAt DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  channel              Channel            @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  assets               VideoAsset[]
+  upload               VideoUpload?
+  likes                VideoLike[]
+  comments             Comment[]
+  views                VideoView[]
+  watchHistory         WatchHistory[]
+  playlistItems        PlaylistItem[]
+  processingOutbox     ProcessingOutbox[]
 
   @@index([channelId, createdAt(sort: Desc)])
   @@index([status, updatedAt])
   @@index([status, visibility, publishedAt(sort: Desc), id(sort: Desc)])
+}
+
+model ProcessingOutbox {
+  id              String    @id @default(uuid()) @db.Uuid
+  videoId         String    @db.Uuid
+  generation      Int
+  originalAssetId String    @db.Uuid
+  correlationId   String    @db.VarChar(100)
+  createdAt       DateTime  @default(now())
+  publishedAt     DateTime?
+  attempts        Int       @default(0)
+  lastError       String?   @db.VarChar(500)
+  video           Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([videoId, generation])
+  @@index([publishedAt, createdAt])
 }
 
 model VideoLike {
@@ -174,8 +194,8 @@ model WatchHistory {
   videoId             String   @db.Uuid
   lastPositionSeconds Int
   lastWatchedAt       DateTime @default(now())
-  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  video                Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video               Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
 
   @@id([userId, videoId])
   @@index([userId, lastWatchedAt(sort: Desc), videoId(sort: Desc)])
@@ -197,20 +217,20 @@ model VideoUpload {
 }
 
 model VideoAsset {
-  id             String         @id @default(uuid()) @db.Uuid
-  videoId        String         @db.Uuid
-  kind           VideoAssetKind
-  bucket         String         @db.VarChar(100)
-  objectKey      String         @db.VarChar(1024)
-  mimeType       String         @db.VarChar(255)
-  sizeBytes      BigInt?
-  width          Int?
-  height         Int?
-  bitrateKbps    Int?
+  id              String         @id @default(uuid()) @db.Uuid
+  videoId         String         @db.Uuid
+  kind            VideoAssetKind
+  bucket          String         @db.VarChar(100)
+  objectKey       String         @db.VarChar(1024)
+  mimeType        String         @db.VarChar(255)
+  sizeBytes       BigInt?
+  width           Int?
+  height          Int?
+  bitrateKbps     Int?
   durationSeconds Int?
-  metadata       Json?
-  createdAt      DateTime       @default(now())
-  video          Video          @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  metadata        Json?
+  createdAt       DateTime       @default(now())
+  video           Video          @relation(fields: [videoId], references: [id], onDelete: Cascade)
 
   @@unique([bucket, objectKey])
   @@index([videoId, kind])

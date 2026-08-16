@@ -119,8 +119,8 @@ API -> Browser: signed upload URL (15 minutes)
 Browser -> MinIO: PUT original MP4
 Browser -> API: complete upload
 API -> MinIO: HEAD and verify size/content type
-API -> PostgreSQL: ORIGINAL + UPLOADED (short transaction)
-API -> Redis/BullMQ: enqueue deterministic video job
+API -> PostgreSQL: ORIGINAL + generation 1 + outbox (short transaction)
+API publisher -> Redis/BullMQ: enqueue deterministic generation job
 Worker -> MinIO: download original
 Worker -> ffprobe: authoritative validation
 Worker -> planner: source-aware 360/480/720 selection
@@ -136,12 +136,44 @@ Worker -> PostgreSQL: assets + READY (short transaction)
 temporary storage/database failure -> BullMQ retry with exponential backoff
 invalid/corrupt media              -> discard retries and mark FAILED
 retry budget exhausted             -> best-effort generated cleanup + FAILED
+owner retry                        -> validate ORIGINAL + increment generation + outbox
+old generation wakes              -> generation mismatch -> successful no-op
 concurrent deletion                -> DELETING wins; completion CAS fails; cleanup prefixes
 duplicate READY delivery           -> no-op
 ```
 
-External processing never runs inside a database transaction. A queue enqueue is not atomic with the
-database commit; repeating upload completion safely repairs an UPLOADED-but-not-enqueued window.
+External processing never runs inside a database transaction. The processing outbox makes the state
+claim and durable publication intent atomic; its bounded API publisher performs the non-atomic queue
+write afterward and retries until marked published.
+
+## How do you safely retry asynchronous video processing?
+
+Treat a user retry as a new logical processing generation, not another BullMQ attempt. Generation 1
+is the initial run; an accepted retry compare-and-sets FAILED, increments the generation, clears the
+safe failure reason, and creates one outbox row in the same short PostgreSQL transaction. The job ID
+contains video ID plus generation, making repeated publication idempotent. Ordinary BullMQ attempts
+reuse the same generation.
+
+The worker checks state and generation before FFmpeg, before upload, and in the final READY
+compare-and-set. It never runs FFmpeg inside a database transaction. Generated objects use isolated
+generation prefixes, only committed asset rows become authoritative, and stale/deleted work cleans
+only its own prefix. The DELETING barrier prevents resurrection. Terminal failure updates FAILED only
+for the current generation and exposes a curated reason while internal logs retain diagnostic detail.
+
+### Why use an outbox here?
+
+PostgreSQL and Redis/BullMQ cannot share an atomic commit. With `await db.update(); await queue.add()`,
+a crash after the database call strands processable state without a job. Reversing the calls creates
+the opposite orphan-job window. A purpose-specific PostgreSQL outbox commits state and publication
+intent together. If queue publication fails it remains pending; if publishing succeeds but marking
+it crashes, the deterministic BullMQ ID safely deduplicates the retry.
+
+### Why not Kafka?
+
+There is one asynchronous domain pipeline, BullMQ already supplies durable work delivery, retries,
+and backoff, and PostgreSQL is already the source of truth. The small outbox closes the actual
+dual-write gap. Kafka would add deployment, monitoring, partitioning, and consumer operations without
+solving another demonstrated requirement.
 
 ## Authorization model
 

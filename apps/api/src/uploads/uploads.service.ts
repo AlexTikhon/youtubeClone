@@ -8,10 +8,6 @@ import { API_ENVIRONMENT } from '../config/config.module.js';
 import { PrismaService } from '../infrastructure/database/prisma.service.js';
 import { AppError } from '../infrastructure/http/app-error.js';
 import {
-  VIDEO_PROCESSING_QUEUE,
-  type VideoProcessingQueue,
-} from '../infrastructure/queue/video-processing-queue.port.js';
-import {
   OBJECT_STORAGE,
   type ObjectStorage,
 } from '../infrastructure/storage/storage.port.js';
@@ -25,8 +21,6 @@ export class UploadsService {
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(VideosService) private readonly videos: VideosService,
     @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage,
-    @Inject(VIDEO_PROCESSING_QUEUE)
-    private readonly processingQueue: VideoProcessingQueue,
     @Inject(API_ENVIRONMENT) private readonly environment: ApiEnvironment,
   ) {}
 
@@ -171,12 +165,19 @@ export class UploadsService {
       );
     }
 
-    const asset = await this.prisma.$transaction(async (transaction) => {
+    await this.prisma.$transaction(async (transaction) => {
+      const generation = Math.max(1, video.processingGeneration);
       if (video.status === 'UPLOADING') {
         assertVideoTransition(video.status, 'UPLOADED');
         const updated = await transaction.video.updateMany({
           where: { id: video.id, status: 'UPLOADING' },
-          data: { status: 'UPLOADED' },
+          data: {
+            status: 'UPLOADED',
+            processingGeneration: generation,
+            processingStartedAt: null,
+            processingFinishedAt: null,
+            failureReason: null,
+          },
         });
         if (updated.count !== 1)
           throw new AppError(
@@ -189,7 +190,7 @@ export class UploadsService {
           data: { status: UploadStatus.COMPLETED, completedAt: new Date() },
         });
       }
-      return transaction.videoAsset.upsert({
+      const asset = await transaction.videoAsset.upsert({
         where: {
           bucket_objectKey: {
             bucket: upload.bucket,
@@ -209,13 +210,18 @@ export class UploadsService {
           sizeBytes: metadata.sizeBytes,
         },
       });
-    });
-
-    await this.processingQueue.enqueue({
-      schemaVersion: 1,
-      videoId: video.id,
-      originalAssetId: asset.id,
-      correlationId,
+      await transaction.processingOutbox.upsert({
+        where: {
+          videoId_generation: { videoId: video.id, generation },
+        },
+        create: {
+          videoId: video.id,
+          generation,
+          originalAssetId: asset.id,
+          correlationId,
+        },
+        update: {},
+      });
     });
     return { videoId: video.id, status: 'UPLOADED' as const };
   }

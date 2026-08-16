@@ -12,6 +12,7 @@ describe('video processing state machine', () => {
     ['UPLOADED', 'PROCESSING'],
     ['PROCESSING', 'READY'],
     ['PROCESSING', 'FAILED'],
+    ['FAILED', 'PROCESSING'],
     ['FAILED', 'DELETING'],
   ] as const)('allows %s -> %s', (from, to) => {
     expect(() => assertVideoTransition(from, to)).not.toThrow();
@@ -23,8 +24,8 @@ describe('video processing state machine', () => {
     );
   });
 
-  it('does not advertise unsupported reprocessing', () => {
-    expect(() => assertVideoTransition('FAILED', 'PROCESSING')).toThrow();
+  it('allows failed retries but not READY reprocessing', () => {
+    expect(() => assertVideoTransition('FAILED', 'PROCESSING')).not.toThrow();
     expect(() => assertVideoTransition('READY', 'PROCESSING')).toThrow();
   });
 });

@@ -97,10 +97,17 @@ services:
       S3_BUCKET_STREAMS: ${S3_BUCKET_STREAMS:-video-streams}
       S3_BUCKET_THUMBNAILS: ${S3_BUCKET_THUMBNAILS:-video-thumbnails}
       WORKER_CONCURRENCY: 1
+      WORKER_HEALTH_PORT: 4001
       FFMPEG_PATH: ffmpeg
       FFPROBE_PATH: ffprobe
       MEDIA_PROCESS_TIMEOUT_MS: ${MEDIA_PROCESS_TIMEOUT_MS:-900000}
       MAX_VIDEO_DURATION_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-7200}
+    healthcheck:
+      test:
+        ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:4001/health/ready']
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 volumes:

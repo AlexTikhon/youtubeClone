@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import {
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadBucketCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
@@ -65,12 +66,25 @@ export class StorageService implements OnApplicationShutdown {
     }
   }
 
+  async checkReady(): Promise<void> {
+    await Promise.all(
+      [
+        workerEnvironment.S3_BUCKET_ORIGINALS,
+        workerEnvironment.S3_BUCKET_STREAMS,
+        workerEnvironment.S3_BUCKET_THUMBNAILS,
+      ].map((bucket) =>
+        this.client.send(new HeadBucketCommand({ Bucket: bucket })),
+      ),
+    );
+  }
+
   async uploadThumbnail(
     videoId: string,
+    generation: number,
     sourcePath: string,
   ): Promise<{ bucket: string; objectKey: string; sizeBytes: bigint }> {
     const bucket = workerEnvironment.S3_BUCKET_THUMBNAILS;
-    const objectKey = `videos/${videoId}/thumbnail/thumbnail.jpg`;
+    const objectKey = `videos/${videoId}/generations/${generation}/thumbnail/thumbnail.jpg`;
     const sizeBytes = await this.uploadFile(
       bucket,
       objectKey,
@@ -82,6 +96,7 @@ export class StorageService implements OnApplicationShutdown {
 
   async uploadHls(
     videoId: string,
+    generation: number,
     sourceDirectory: string,
     renditionNames: readonly string[],
   ): Promise<{
@@ -97,7 +112,7 @@ export class StorageService implements OnApplicationShutdown {
     }>;
   }> {
     const bucket = workerEnvironment.S3_BUCKET_STREAMS;
-    const storagePrefix = `videos/${videoId}/hls/`;
+    const storagePrefix = `videos/${videoId}/generations/${generation}/hls/`;
     const rootFiles = await readdir(sourceDirectory);
     if (
       !rootFiles.includes('master.m3u8') ||
@@ -174,8 +189,24 @@ export class StorageService implements OnApplicationShutdown {
     }
   }
 
-  async removeGenerated(videoId: string): Promise<void> {
+  async removeGenerated(videoId: string, generation: number): Promise<void> {
     await Promise.all([
+      this.deletePrefix(
+        workerEnvironment.S3_BUCKET_STREAMS,
+        `videos/${videoId}/generations/${generation}/`,
+      ),
+      this.deletePrefix(
+        workerEnvironment.S3_BUCKET_THUMBNAILS,
+        `videos/${videoId}/generations/${generation}/`,
+      ),
+    ]);
+  }
+
+  async removeObsoleteGenerated(
+    videoId: string,
+    currentGeneration: number,
+  ): Promise<void> {
+    const operations: Promise<void>[] = [
       this.deletePrefix(
         workerEnvironment.S3_BUCKET_STREAMS,
         `videos/${videoId}/hls/`,
@@ -184,7 +215,11 @@ export class StorageService implements OnApplicationShutdown {
         workerEnvironment.S3_BUCKET_THUMBNAILS,
         `videos/${videoId}/thumbnail/`,
       ),
-    ]);
+    ];
+    for (let generation = 1; generation < currentGeneration; generation += 1) {
+      operations.push(this.removeGenerated(videoId, generation));
+    }
+    await Promise.all(operations);
   }
 
   private async uploadFile(

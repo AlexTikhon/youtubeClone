@@ -105,6 +105,20 @@ export class VideosController {
     return this.uploads.complete(videoId, user.id, request.requestId);
   }
 
+  @Post(':videoId/retry-processing')
+  @ApiCookieAuth('session')
+  @UseGuards(SessionGuard)
+  @ApiOperation({
+    summary: 'Retry failed video processing as a new generation',
+  })
+  retryProcessing(
+    @Param('videoId', ParseUUIDPipe) videoId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() request: RequestWithContext,
+  ) {
+    return this.videos.retryProcessing(videoId, user.id, request.requestId);
+  }
+
   @Get()
   listPublic(
     @Query(new ZodBodyPipe(cursorPaginationSchema))

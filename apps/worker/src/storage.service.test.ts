@@ -56,26 +56,28 @@ describe('StorageService ABR upload', () => {
         await writeFile(join(renditionDirectory, 'segment000.ts'), 'segment');
       }
 
-      const result = await service.uploadHls('video-id', directory, [
+      const result = await service.uploadHls('video-id', 2, directory, [
         '360p',
         '480p',
       ]);
 
-      expect(result.masterManifestKey).toBe('videos/video-id/hls/master.m3u8');
+      expect(result.masterManifestKey).toBe(
+        'videos/video-id/generations/2/hls/master.m3u8',
+      );
       expect(result.renditions).toEqual([
         expect.objectContaining({
           name: '360p',
-          manifestKey: 'videos/video-id/hls/360p/index.m3u8',
+          manifestKey: 'videos/video-id/generations/2/hls/360p/index.m3u8',
           segmentCount: 1,
         }),
         expect.objectContaining({
           name: '480p',
-          manifestKey: 'videos/video-id/hls/480p/index.m3u8',
+          manifestKey: 'videos/video-id/generations/2/hls/480p/index.m3u8',
           segmentCount: 1,
         }),
       ]);
       expect(uploadFile.mock.calls.at(-1)?.[1]).toBe(
-        'videos/video-id/hls/master.m3u8',
+        'videos/video-id/generations/2/hls/master.m3u8',
       );
     } finally {
       service.onApplicationShutdown();

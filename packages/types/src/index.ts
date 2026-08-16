@@ -18,7 +18,7 @@ const ALLOWED_VIDEO_TRANSITIONS: Readonly<
   UPLOADED: ['PROCESSING', 'FAILED', 'DELETING'],
   PROCESSING: ['READY', 'FAILED', 'DELETING'],
   READY: ['DELETING'],
-  FAILED: ['DELETING'],
+  FAILED: ['PROCESSING', 'DELETING'],
   DELETING: [],
 };
 
@@ -86,6 +86,10 @@ export interface OwnerVideoDto {
   thumbnailUrl: string | null;
   playbackUrl: string | null;
   failureReason: string | null;
+  processingGeneration: number;
+  processingStartedAt: string | null;
+  processingFinishedAt: string | null;
+  updatedAt: string;
   channel: {
     name: string;
     handle: string;
@@ -231,5 +235,6 @@ export interface ProcessVideoJob {
   schemaVersion: 1;
   videoId: string;
   originalAssetId: string;
+  generation: number;
   correlationId: string;
 }

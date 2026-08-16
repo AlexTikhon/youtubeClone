@@ -43,6 +43,7 @@ export const workerEnvironmentSchema = infrastructureSchema.extend({
     .enum(['development', 'test', 'production'])
     .default('development'),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
+  WORKER_HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(4001),
   FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
   FFPROBE_PATH: z.string().min(1).default('ffprobe'),
   MEDIA_PROCESS_TIMEOUT_MS: z.coerce

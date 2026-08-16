@@ -7,7 +7,12 @@ import { MediaController } from './media.controller.js';
 
 function createHttpDoubles(visibility: 'PUBLIC' | 'PRIVATE' = 'PUBLIC') {
   const videos = {
-    assertMediaAccess: vi.fn().mockResolvedValue({ visibility }),
+    resolveMediaAsset: vi.fn().mockResolvedValue({
+      visibility,
+      bucket: 'streams',
+      objectKey:
+        'videos/11111111-1111-4111-8111-111111111111/generations/2/hls/master.m3u8',
+    }),
   };
   const storage = {
     getObject: vi.fn().mockResolvedValue({
@@ -20,11 +25,7 @@ function createHttpDoubles(visibility: 'PUBLIC' | 'PRIVATE' = 'PUBLIC') {
   const response = Object.assign(new PassThrough(), {
     setHeader: vi.fn(),
   });
-  const controller = new MediaController(
-    videos as never,
-    storage as never,
-    { S3_BUCKET_STREAMS: 'streams' } as never,
-  );
+  const controller = new MediaController(videos as never, storage as never);
   return { controller, request, response, storage };
 }
 
@@ -40,7 +41,7 @@ describe('MediaController ABR routes', () => {
 
     expect(storage.getObject).toHaveBeenCalledWith(
       'streams',
-      'videos/11111111-1111-4111-8111-111111111111/hls/master.m3u8',
+      'videos/11111111-1111-4111-8111-111111111111/generations/2/hls/master.m3u8',
     );
     expect(response.setHeader).toHaveBeenCalledWith(
       'cache-control',
@@ -61,7 +62,7 @@ describe('MediaController ABR routes', () => {
 
     expect(storage.getObject).toHaveBeenCalledWith(
       'streams',
-      'videos/11111111-1111-4111-8111-111111111111/hls/480p/segment000.ts',
+      'videos/11111111-1111-4111-8111-111111111111/generations/2/hls/480p/segment000.ts',
     );
   });
 

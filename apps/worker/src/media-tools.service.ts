@@ -21,6 +21,17 @@ const HLS_SEGMENT_DURATION_SECONDS = 6;
 
 @Injectable()
 export class MediaToolsService {
+  async checkReady(): Promise<void> {
+    await Promise.all([
+      this.run(workerEnvironment.FFMPEG_PATH, ['-version'], 'ffmpeg readiness'),
+      this.run(
+        workerEnvironment.FFPROBE_PATH,
+        ['-version'],
+        'ffprobe readiness',
+      ),
+    ]);
+  }
+
   async probe(inputPath: string): Promise<MediaMetadata> {
     const stdout = await this.run(
       workerEnvironment.FFPROBE_PATH,

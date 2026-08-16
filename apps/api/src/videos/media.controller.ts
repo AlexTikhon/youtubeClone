@@ -10,10 +10,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-import type { ApiEnvironment } from '@youtube-clone/config';
-
 import { OptionalSessionGuard } from '../auth/optional-session.guard.js';
-import { API_ENVIRONMENT } from '../config/config.module.js';
 import { AppError } from '../infrastructure/http/app-error.js';
 import type { RequestWithContext } from '../infrastructure/http/request-context.js';
 import {
@@ -28,7 +25,6 @@ export class MediaController {
   constructor(
     @Inject(VideosService) private readonly videos: VideosService,
     @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage,
-    @Inject(API_ENVIRONMENT) private readonly environment: ApiEnvironment,
   ) {}
 
   @Get(':videoId/thumbnail')
@@ -37,11 +33,11 @@ export class MediaController {
     @Req() request: RequestWithContext,
     @Res() response: Response,
   ) {
-    return this.send(
+    return this.sendAsset(
       videoId,
       request.user?.id,
-      this.environment.S3_BUCKET_THUMBNAILS,
-      `videos/${videoId}/thumbnail/thumbnail.jpg`,
+      'THUMBNAIL',
+      undefined,
       'immutable',
       request,
       response,
@@ -62,11 +58,11 @@ export class MediaController {
     ) {
       throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);
     }
-    return this.send(
+    return this.sendAsset(
       videoId,
       request.user?.id,
-      this.environment.S3_BUCKET_STREAMS,
-      `videos/${videoId}/hls/${rendition}/${fileName}`,
+      'HLS_MANIFEST',
+      `${rendition}/${fileName}`,
       'immutable',
       request,
       response,
@@ -79,33 +75,36 @@ export class MediaController {
     @Req() request: RequestWithContext,
     @Res() response: Response,
   ) {
-    return this.send(
+    return this.sendAsset(
       videoId,
       request.user?.id,
-      this.environment.S3_BUCKET_STREAMS,
-      `videos/${videoId}/hls/master.m3u8`,
+      'HLS_MANIFEST',
+      undefined,
       'immutable',
       request,
       response,
     );
   }
 
-  private async send(
+  private async sendAsset(
     videoId: string,
     ownerId: string | undefined,
-    bucket: string,
-    objectKey: string,
+    kind: 'THUMBNAIL' | 'HLS_MANIFEST',
+    relativeKey: string | undefined,
     publicCache: 'immutable' | 'manifest',
     request: RequestWithContext,
     response: Response,
   ): Promise<void> {
-    const access = await this.videos.assertMediaAccess(videoId, ownerId);
+    const asset = await this.videos.resolveMediaAsset(videoId, ownerId, kind);
+    const objectKey = relativeKey
+      ? `${manifestRoot(asset.objectKey)}${relativeKey}`
+      : asset.objectKey;
     try {
-      const object = await this.storage.getObject(bucket, objectKey);
+      const object = await this.storage.getObject(asset.bucket, objectKey);
       response.setHeader('content-type', object.contentType);
       response.setHeader(
         'cache-control',
-        access.visibility === 'PUBLIC'
+        asset.visibility === 'PUBLIC'
           ? publicCache === 'immutable'
             ? 'public, max-age=31536000, immutable'
             : 'public, max-age=300'
@@ -120,4 +119,14 @@ export class MediaController {
       throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);
     }
   }
+}
+
+function manifestRoot(objectKey: string): string {
+  if (objectKey.endsWith('/master.m3u8'))
+    return objectKey.slice(0, -'master.m3u8'.length);
+  const hlsMarker = '/hls/';
+  const hlsIndex = objectKey.indexOf(hlsMarker);
+  return hlsIndex >= 0
+    ? objectKey.slice(0, hlsIndex + hlsMarker.length)
+    : objectKey.slice(0, objectKey.lastIndexOf('/') + 1);
 }

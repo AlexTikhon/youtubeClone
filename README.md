@@ -17,7 +17,8 @@ Browser -- Next.js UI -- REST/session cookie --> NestJS modular monolith --> Pos
 ```
 
 The browser uploads large originals directly to S3-compatible MinIO. The API verifies the stored
-object and enqueues a versioned BullMQ job. A separately deployable worker validates media with
+object and atomically records a generation-specific processing outbox event. A lightweight publisher
+enqueues a deterministic BullMQ job. A separately deployable worker validates media with
 ffprobe and creates a thumbnail plus a source-aware 360p/480p/720p adaptive HLS ladder and master
 playlist. PostgreSQL remains authoritative for ownership, lifecycle, social state, playlists,
 history, and full-text search.
@@ -26,10 +27,10 @@ history, and full-text search.
 
 - Opaque server-side sessions and owned channels
 - Direct signed MP4 upload, FFmpeg processing, thumbnails, and adaptive HLS playback
-- Explicit video lifecycle with retry-safe jobs and deletion barriers
+- Explicit video lifecycle with owner recovery, processing generations, an outbox, and deletion barriers
 - Home/subscription feeds, likes, comments, subscriptions, qualified views, history, and resume
 - PostgreSQL full-text search, related videos, playlists, and concurrency-safe Watch Later
-- Creator Studio for metadata, visibility, processing state, and safe deletion
+- Creator Studio for metadata, visibility, processing state/retry, and safe deletion
 - Structured API errors/logs, rate limits, health checks, unit/integration/browser/media tests, and CI
 
 ## Run locally
@@ -88,6 +89,8 @@ For the media suite, start the Compose worker first and set `RUN_MEDIA_E2E=true`
 The design deliberately uses a modular monolith, PostgreSQL FTS instead of Elasticsearch, polling
 instead of WebSockets, cursor pagination instead of offsets, and no application DTO cache. Those
 choices match the demonstrated workload while keeping consistency and invalidation understandable.
+The processing outbox is intentionally narrow: it closes the PostgreSQL/BullMQ dual-write gap for the
+one asynchronous domain pipeline without introducing Kafka or a generic event framework.
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Video pipeline](docs/VIDEO_PIPELINE.md)
