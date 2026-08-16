@@ -54,8 +54,11 @@ internals do not cross the HTTP boundary. Browser upload bytes go directly to th
 
 Playback and thumbnail URLs point to guarded API media routes rather than MinIO. This avoids leaking
 internal object keys/endpoints, works across host and Docker DNS, and lets every relative HLS segment
-request use the same visibility policy. It adds API bandwidth, which is acceptable for this home
-phase; a production CDN with signed cookies/URLs is a later optimization.
+request use the same visibility policy. A single playback URL targets `master.m3u8`; its relative
+`360p/index.m3u8` paths and each variant's relative segment names naturally resolve through the same
+allow-listed route. Rendition names and filenames are strict allow lists, preventing traversal,
+encoded traversal, absolute paths, or cross-video prefixes. It adds API bandwidth, which is
+acceptable for this home phase; a production CDN with signed cookies/URLs is a later optimization.
 
 ## Client structure
 
@@ -68,6 +71,9 @@ The client keeps URL search state in `/search?q=...`, isolates Save/playlist beh
 and preserves playlist playback with `?list=<playlistId>`. Route shells remain server components;
 interactive query/mutation boundaries are focused client components. A small query-key factory is
 used for the cross-feature invalidations introduced by playlists and search.
+
+The watch DTO still exposes one playback URL. hls.js and native HLS discover variants from the master
+and remain in automatic quality mode; no manual quality UI or player-framework rewrite is required.
 
 ## Read models and pagination
 
@@ -120,7 +126,8 @@ playable PUBLIC videos. Owner checks happen in the service before every mutation
 Redis remains queue infrastructure plus a narrow fixed-window rate-limit boundary for login,
 comments, likes, view qualification, and search. DTO/read-model caching is intentionally absent because
 visibility and metadata invalidation spans feeds, search, related results, and playlists. Public
-immutable thumbnails/HLS segments use HTTP caching; non-public media is `private, no-store`.
+immutable thumbnails and VOD HLS masters/variants/segments use long-lived HTTP caching; non-public
+media, including UNLISTED media, is `private, no-store`.
 
 ## CSRF and proxy assumptions
 

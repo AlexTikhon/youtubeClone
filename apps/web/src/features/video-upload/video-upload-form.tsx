@@ -244,7 +244,7 @@ export function VideoUploadForm() {
         </ol>
         {processingStatus === 'PROCESSING' && (
           <p className="mt-6 text-sm text-amber-300">
-            FFmpeg is creating the thumbnail and HLS rendition…
+            FFmpeg is creating the thumbnail and adaptive HLS renditions…
           </p>
         )}
         {processingStatus === 'FAILED' && (

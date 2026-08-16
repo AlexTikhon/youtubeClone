@@ -9,8 +9,9 @@ docker compose --profile media up -d --build worker
 pnpm dev:app
 ```
 
-Open the web app, API health endpoint, and optionally BullMQ/MinIO logs in separate tabs. Keep a tiny
-MP4 ready. The media E2E generates such a fixture automatically if you want a rehearsal.
+Open the web app, API health endpoint, and optionally BullMQ/MinIO logs in separate tabs. Keep a short
+720p-or-larger MP4 ready so all three variants are selected. The media E2E generates such a fixture
+automatically if you want a rehearsal.
 
 ## Script
 
@@ -23,9 +24,11 @@ MP4 ready. The media E2E generates such a fixture automatically if you want a re
    Explain that NestJS issues the signed intent but does not proxy the large request body.
 4. **Watch processing (60 seconds).** Show `UPLOADING -> UPLOADED -> PROCESSING -> READY`. Mention
    ffprobe as the authority for media validity, deterministic output keys, three BullMQ attempts, and
-   worker concurrency one locally.
-5. **Play HLS (45 seconds).** Open the completed video. Explain native HLS where supported, hls.js
-   elsewhere, and API-mediated authorization for manifests, segments, and thumbnails.
+   worker concurrency one plus sequential variants locally.
+5. **Play adaptive HLS (45 seconds).** Open the completed video and, if useful, show MinIO's
+   `master.m3u8` plus 360p/480p/720p directories. Explain that native HLS or hls.js discovers the
+   variant playlists and stays in automatic quality mode; API-mediated authorization covers the
+   master, variants, segments, and thumbnail.
 6. **Exercise product state (60 seconds).** Like, comment, subscribe, watch long enough for a qualified
    view, and show resume/history behavior. These are composite-key/upsert-backed idempotent writes.
 7. **Show discovery (60 seconds).** Search for the uploaded title, then open related videos. Mention

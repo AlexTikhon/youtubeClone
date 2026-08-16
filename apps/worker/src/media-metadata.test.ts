@@ -31,6 +31,7 @@ describe('media metadata', () => {
       videoCodec: 'h264',
       audioCodec: 'aac',
       bitrateKbps: 800,
+      rotationDegrees: 0,
     });
   });
 
@@ -48,5 +49,24 @@ describe('media metadata', () => {
   it('does not upscale and emits dimensions suitable for H.264', () => {
     expect(fitWithin720p(1920, 1080)).toEqual({ width: 1280, height: 720 });
     expect(fitWithin720p(641, 359)).toEqual({ width: 640, height: 358 });
+  });
+
+  it('uses display orientation for phone rotation metadata', () => {
+    expect(
+      parseProbeOutput(
+        JSON.stringify({
+          format: { duration: '2' },
+          streams: [
+            {
+              codec_type: 'video',
+              codec_name: 'h264',
+              width: 1920,
+              height: 1080,
+              side_data_list: [{ rotation: -90 }],
+            },
+          ],
+        }),
+      ),
+    ).toMatchObject({ width: 1080, height: 1920, rotationDegrees: -90 });
   });
 });

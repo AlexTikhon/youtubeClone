@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Injectable } from '@nestjs/common';
@@ -11,6 +11,13 @@ import {
   type MediaMetadata,
 } from './media-metadata.js';
 import { ProcessingError } from './processing-error.js';
+import {
+  createMasterPlaylist,
+  type GeneratedRendition,
+  type RenditionSpec,
+} from './hls-renditions.js';
+
+const HLS_SEGMENT_DURATION_SECONDS = 6;
 
 @Injectable()
 export class MediaToolsService {
@@ -28,14 +35,24 @@ export class MediaToolsService {
       ],
       'ffprobe',
     );
-    return parseProbeOutput(stdout);
+    const metadata = parseProbeOutput(stdout);
+    if (
+      metadata.durationSeconds > workerEnvironment.MAX_VIDEO_DURATION_SECONDS
+    ) {
+      throw new ProcessingError(
+        `Video duration ${metadata.durationSeconds}s exceeds the configured ${workerEnvironment.MAX_VIDEO_DURATION_SECONDS}s limit`,
+        false,
+        'The uploaded video is too long',
+      );
+    }
+    return metadata;
   }
 
   async generateThumbnail(
     inputPath: string,
     outputPath: string,
     metadata: MediaMetadata,
-  ): Promise<void> {
+  ): Promise<{ width: number; height: number }> {
     const size = fitWithin720p(metadata.width, metadata.height);
     const timestamp = Math.max(
       0,
@@ -59,48 +76,85 @@ export class MediaToolsService {
       ],
       'thumbnail generation',
     );
+    return size;
   }
 
-  async generateHls(
+  async generateHlsRendition(
     inputPath: string,
     outputDirectory: string,
-    metadata: MediaMetadata,
-  ): Promise<{ width: number; height: number }> {
-    await mkdir(outputDirectory, { recursive: true });
-    const size = fitWithin720p(metadata.width, metadata.height);
+    spec: RenditionSpec,
+  ): Promise<GeneratedRendition> {
+    const renditionDirectory = join(outputDirectory, spec.name);
+    await mkdir(renditionDirectory, { recursive: true });
+    const audioArguments =
+      spec.audioBitrateKbps > 0
+        ? ['-c:a', 'aac', '-b:a', `${spec.audioBitrateKbps}k`, '-ac', '2']
+        : ['-an'];
     await this.run(
       workerEnvironment.FFMPEG_PATH,
       [
         '-y',
         '-i',
         inputPath,
+        '-map',
+        '0:v:0',
+        '-map',
+        '0:a:0?',
         '-vf',
-        `scale=${size.width}:${size.height}`,
+        `scale=${spec.width}:${spec.height}`,
         '-c:v',
         'libx264',
         '-preset',
         'veryfast',
-        '-crf',
-        '23',
+        '-b:v',
+        `${spec.videoBitrateKbps}k`,
+        '-maxrate',
+        `${spec.videoBitrateKbps}k`,
+        '-bufsize',
+        `${spec.videoBitrateKbps * 2}k`,
         '-pix_fmt',
         'yuv420p',
-        '-c:a',
-        'aac',
-        '-b:a',
-        '128k',
-        '-ac',
-        '2',
+        '-sc_threshold',
+        '0',
+        '-force_key_frames',
+        `expr:gte(t,n_forced*${HLS_SEGMENT_DURATION_SECONDS})`,
+        ...audioArguments,
         '-hls_time',
-        '4',
+        String(HLS_SEGMENT_DURATION_SECONDS),
         '-hls_playlist_type',
         'vod',
+        '-hls_flags',
+        'independent_segments',
         '-hls_segment_filename',
-        join(outputDirectory, 'segment%03d.ts'),
-        join(outputDirectory, 'index.m3u8'),
+        join(renditionDirectory, 'segment%03d.ts'),
+        join(renditionDirectory, 'index.m3u8'),
       ],
-      'HLS transcoding',
+      `${spec.name} HLS transcoding`,
     );
-    return size;
+    const segmentCount = (await readdir(renditionDirectory)).filter((name) =>
+      /^segment\d{3,6}\.ts$/.test(name),
+    ).length;
+    if (segmentCount === 0) {
+      throw new ProcessingError(
+        `${spec.name} transcoding produced no HLS segments`,
+        false,
+        'The video could not be packaged for playback',
+      );
+    }
+    return {
+      spec,
+      manifestPath: join(renditionDirectory, 'index.m3u8'),
+      segmentCount,
+    };
+  }
+
+  async generateHlsMaster(
+    outputDirectory: string,
+    renditions: readonly GeneratedRendition[],
+  ): Promise<string> {
+    const manifestPath = join(outputDirectory, 'master.m3u8');
+    await writeFile(manifestPath, createMasterPlaylist(renditions), 'utf8');
+    return manifestPath;
   }
 
   private run(

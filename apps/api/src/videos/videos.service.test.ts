@@ -18,7 +18,13 @@ const privateVideo = {
     avatarUrl: null,
     _count: { subscriptions: 0 },
   },
-  assets: [{ id: 'manifest' }],
+  assets: [
+    {
+      id: 'manifest',
+      objectKey:
+        'videos/ad358d90-fbd5-4ef5-b567-c620b3f0fca0/hls/720p/index.m3u8',
+    },
+  ],
   _count: { likes: 0, views: 0 },
   likes: [],
   watchHistory: [],
@@ -39,7 +45,34 @@ describe('VideosService authorization and publishing', () => {
       service.getWatch(privateVideo.id, 'owner-id'),
     ).resolves.toMatchObject({
       id: privateVideo.id,
-      playbackUrl: expect.any(String),
+      playbackUrl: `/api/v1/media/videos/${privateVideo.id}/hls/720p/index.m3u8`,
+    });
+  });
+
+  it('points new videos at the ABR master without breaking legacy manifests', async () => {
+    const prisma = {
+      video: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...privateVideo,
+          assets: [
+            {
+              id: 'manifest',
+              objectKey: `videos/${privateVideo.id}/hls/master.m3u8`,
+            },
+          ],
+        }),
+      },
+      subscription: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const service = new VideosService(
+      prisma as never,
+      {} as never,
+      {} as never,
+    );
+    await expect(
+      service.getWatch(privateVideo.id, 'owner-id'),
+    ).resolves.toMatchObject({
+      playbackUrl: `/api/v1/media/videos/${privateVideo.id}/hls/master.m3u8`,
     });
   });
 

@@ -60,14 +60,24 @@ intent lifetime, and verifies stored size/content type before enqueueing work.
 ### Why HLS?
 
 Segmented delivery supports seeking, resilient playback, and browser streaming through native HLS or
-hls.js. This project emits one bounded rendition to keep local CPU cost predictable; adaptive bitrate
-would be an isolated future experiment, not a requirement for completion.
+hls.js.
+
+### Why adaptive bitrate HLS?
+
+Different viewers have different network throughput, screen sizes, and device decode capacity. A
+master playlist lets hls.js or native HLS automatically move between variants, reducing buffering
+without forcing every viewer to download the highest bitrate. This project deliberately stops at
+360p, 480p, and 720p: that is enough to demonstrate adaptation while keeping laptop CPU, temporary
+disk, and demo time bounded. Source-aware selection prevents upscaling, including for portrait and
+unusual aspect ratios.
 
 ### Why worker concurrency equals one locally?
 
 FFmpeg consumes substantial CPU and memory. One job at a time gives predictable laptops and demos.
-The setting is configurable up to a deliberately small bound, but production sizing would be based on
-measured resource envelopes.
+Within a job, renditions are also sequential because each FFmpeg process already uses CPU threads;
+parallel encodes can oversubscribe a developer machine. Throughput is not the bottleneck for this
+workload. The setting is configurable up to a deliberately small bound, but production sizing would
+be based on measured resource envelopes.
 
 ### Why TanStack Query and no Redux?
 
@@ -113,8 +123,10 @@ API -> PostgreSQL: ORIGINAL + UPLOADED (short transaction)
 API -> Redis/BullMQ: enqueue deterministic video job
 Worker -> MinIO: download original
 Worker -> ffprobe: authoritative validation
-Worker -> FFmpeg: thumbnail + HLS rendition
-Worker -> MinIO: upload segments, manifest, thumbnail
+Worker -> planner: source-aware 360/480/720 selection
+Worker -> FFmpeg: source thumbnail + sequential HLS renditions
+Worker -> worker: write master.m3u8 with relative variants
+Worker -> MinIO: upload segments, variants, master last, thumbnail
 Worker -> PostgreSQL: assets + READY (short transaction)
 ```
 
@@ -149,9 +161,10 @@ against the authenticated user server-side.
 ## What would change at YouTube scale?
 
 Scale—not missing project requirements—would drive a CDN and signed edge authorization, multi-region
-object storage, adaptive-bitrate ladders, distributed transcode scheduling, event streaming, sharded
-metadata stores, dedicated search and recommendation platforms, analytics pipelines, moderation,
-DRM/content protection, and explicit disaster recovery. The bounded in-memory home ranker would likely
-become an offline/online recommendation system with persisted candidate snapshots.
+object storage, per-title/content-aware ladders, independent rendition jobs, specialized or hardware
+encoding workers, distributed orchestration, event streaming, sharded metadata stores, dedicated
+search and recommendation platforms, analytics pipelines, moderation, DRM/content protection, and
+explicit disaster recovery. The bounded in-memory home ranker would likely become an offline/online
+recommendation system with persisted candidate snapshots.
 
 None of those additions improves the learning ROI of this single-developer application today.

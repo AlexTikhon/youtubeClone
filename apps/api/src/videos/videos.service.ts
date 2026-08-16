@@ -35,7 +35,7 @@ const OWNER_INCLUDE = {
   channel: { select: { name: true, handle: true } },
   assets: {
     where: { kind: { in: ['THUMBNAIL', 'HLS_MANIFEST'] } },
-    select: { kind: true },
+    select: { kind: true, objectKey: true },
   },
   _count: { select: { views: true, likes: true, comments: true } },
 } satisfies Prisma.VideoInclude;
@@ -148,7 +148,10 @@ export class VideosService {
       where: { id: videoId },
       include: {
         channel: { include: { _count: { select: { subscriptions: true } } } },
-        assets: { where: { kind: 'HLS_MANIFEST' }, select: { id: true } },
+        assets: {
+          where: { kind: 'HLS_MANIFEST' },
+          select: { id: true, objectKey: true },
+        },
         _count: { select: { likes: true, views: true, comments: true } },
         ...(userId
           ? {
@@ -193,7 +196,7 @@ export class VideosService {
       visibility: video.visibility,
       description: video.description,
       durationSeconds: video.durationSeconds,
-      playbackUrl: `/api/v1/media/videos/${video.id}/hls/720p/index.m3u8`,
+      playbackUrl: playbackUrlForManifest(video.id, video.assets[0]!.objectKey),
       publishedAt: video.publishedAt?.toISOString() ?? null,
       viewsCount: video._count.views,
       likesCount: video._count.likes,
@@ -410,7 +413,12 @@ export class VideosService {
       playbackUrl: video.assets.some(
         (asset: { kind: string }) => asset.kind === 'HLS_MANIFEST',
       )
-        ? `/api/v1/media/videos/${video.id}/hls/720p/index.m3u8`
+        ? playbackUrlForManifest(
+            video.id,
+            video.assets.find(
+              (asset: { kind: string }) => asset.kind === 'HLS_MANIFEST',
+            )!.objectKey,
+          )
         : null,
       publishedAt: video.publishedAt?.toISOString() ?? null,
       createdAt: video.createdAt.toISOString(),
@@ -433,4 +441,9 @@ export class VideosService {
       publishedAt: video.publishedAt.toISOString(),
     };
   }
+}
+
+function playbackUrlForManifest(videoId: string, objectKey: string): string {
+  const isAbrMaster = objectKey === `videos/${videoId}/hls/master.m3u8`;
+  return `/api/v1/media/videos/${videoId}/hls/${isAbrMaster ? 'master.m3u8' : '720p/index.m3u8'}`;
 }

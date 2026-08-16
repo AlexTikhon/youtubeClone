@@ -74,7 +74,7 @@ test('@media upload, transcode, and open HLS playback', async ({ page }) => {
     '-f',
     'lavfi',
     '-i',
-    'color=c=blue:s=320x180:d=2',
+    'testsrc2=size=1280x720:rate=30:duration=2',
     '-f',
     'lavfi',
     '-i',
@@ -139,15 +139,24 @@ test('@media upload, transcode, and open HLS playback', async ({ page }) => {
     expect((await thumbnail.body()).byteLength).toBeGreaterThan(0);
 
     const manifest = await page.request.get(
-      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/hls/720p/index.m3u8`,
+      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/hls/master.m3u8`,
     );
     expect(manifest.ok()).toBe(true);
     const manifestText = await manifest.text();
     expect(manifestText).toContain('#EXTM3U');
-    const segmentName = manifestText.match(/segment\d{3,6}\.ts/)?.[0];
+    expect(manifestText.match(/#EXT-X-STREAM-INF:/g)).toHaveLength(3);
+    expect(manifestText).toContain('360p/index.m3u8');
+    expect(manifestText).toContain('480p/index.m3u8');
+    expect(manifestText).toContain('720p/index.m3u8');
+    const variant = await page.request.get(
+      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/hls/360p/index.m3u8`,
+    );
+    expect(variant.ok()).toBe(true);
+    const variantText = await variant.text();
+    const segmentName = variantText.match(/segment\d{3,6}\.ts/)?.[0];
     expect(segmentName).toBeTruthy();
     const segment = await page.request.get(
-      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/hls/720p/${segmentName}`,
+      `${apiBase}/api/v1/media/videos/${uploadedVideoId}/hls/360p/${segmentName}`,
     );
     expect(segment.ok()).toBe(true);
     expect((await segment.body()).byteLength).toBeGreaterThan(0);

@@ -13,11 +13,18 @@ Large incoming bytes bypass NestJS through a signed PUT. Outgoing HLS and thumbn
 API routes for a correct, simple localhost/private-video boundary. A CDN/object-store delivery layer
 can replace that adapter later without changing frontend DTOs.
 
-## MPEG-TS HLS and one bounded rendition
+## Source-aware adaptive MPEG-TS HLS
 
-MPEG-TS, H.264, and AAC provide the least surprising native-Safari/hls.js baseline. One rendition
-bounded to 720p controls local processing cost. Rendition metadata is an array even though the worker
-emits one entry, leaving adaptive bitrate as an isolated experiment without requiring segment rows.
+MPEG-TS, H.264, and AAC provide the least surprising native-Safari/hls.js baseline. New videos receive
+a source-aware 360/480/720 ladder and one master playlist; small sources receive one bounded `source`
+variant. This improves playback across network and device conditions without adding 1080p, newer
+codecs, DASH, or player quality UI. The existing HLS_MANIFEST JSON metadata was already sufficient,
+so no migration or segment rows were added. Legacy single-rendition manifests remain playable.
+
+Renditions use separate sequential FFmpeg processes. Decoding more than once is less efficient than a
+split filter graph, but it keeps commands, timeout failures, retries, and local debugging independent.
+FFmpeg itself uses multiple threads, so running variants in parallel would oversubscribe typical
+developer hardware. A production platform could schedule rendition jobs independently.
 
 ## Polling instead of push
 
@@ -35,7 +42,8 @@ asset metadata, after those objects have uploaded successfully.
 
 Host `pnpm dev` keeps fast reload and expects configured FFmpeg/ffprobe binaries. The optional Compose
 `media` profile builds a worker image with FFmpeg for machines without those tools and for repeatable
-pipeline verification. Transcode concurrency defaults to one because video jobs are CPU-heavy.
+pipeline verification. Transcode concurrency defaults to one because video jobs are CPU-heavy and
+ABR multiplies temporary disk and CPU work within each job.
 
 ## No implicit reprocessing
 
@@ -93,6 +101,5 @@ No Redis DTO cache was added. The likely read models have broad invalidation req
 local workload does not demonstrate a latency need. Redis does enforce small distributed
 fixed-window limits on login, comments, qualified-view writes, and public search; media routes are
 excluded. Likes have a higher authenticated-user limit because the write is idempotent but still
-causes an aggregate count query. Public VOD segments and thumbnails are immutable and receive
-long-lived HTTP cache headers, manifests receive a short public TTL, and PRIVATE/UNLISTED bytes are
-never publicly cached.
+causes an aggregate count query. Public VOD segments, completed manifests, and thumbnails are
+immutable and receive long-lived HTTP cache headers. PRIVATE/UNLISTED bytes are never publicly cached.

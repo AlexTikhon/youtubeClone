@@ -51,6 +51,12 @@ export const workerEnvironmentSchema = infrastructureSchema.extend({
     .min(10_000)
     .max(3_600_000)
     .default(900_000),
+  MAX_VIDEO_DURATION_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(86_400)
+    .default(7_200),
 });
 
 export const webEnvironmentSchema = z.object({

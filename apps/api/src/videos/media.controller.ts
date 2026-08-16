@@ -57,7 +57,7 @@ export class MediaController {
     @Res() response: Response,
   ) {
     if (
-      rendition !== '720p' ||
+      !/^(source|360p|480p|720p)$/.test(rendition) ||
       !/^(index\.m3u8|segment\d{3,6}\.ts)$/.test(fileName)
     ) {
       throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);
@@ -67,7 +67,24 @@ export class MediaController {
       request.user?.id,
       this.environment.S3_BUCKET_STREAMS,
       `videos/${videoId}/hls/${rendition}/${fileName}`,
-      fileName.endsWith('.ts') ? 'immutable' : 'manifest',
+      'immutable',
+      request,
+      response,
+    );
+  }
+
+  @Get(':videoId/hls/master.m3u8')
+  masterManifest(
+    @Param('videoId', ParseUUIDPipe) videoId: string,
+    @Req() request: RequestWithContext,
+    @Res() response: Response,
+  ) {
+    return this.send(
+      videoId,
+      request.user?.id,
+      this.environment.S3_BUCKET_STREAMS,
+      `videos/${videoId}/hls/master.m3u8`,
+      'immutable',
       request,
       response,
     );

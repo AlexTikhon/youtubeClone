@@ -83,48 +83,85 @@ export class StorageService implements OnApplicationShutdown {
   async uploadHls(
     videoId: string,
     sourceDirectory: string,
+    renditionNames: readonly string[],
   ): Promise<{
     bucket: string;
-    manifestKey: string;
-    manifestSizeBytes: bigint;
+    masterManifestKey: string;
+    masterManifestSizeBytes: bigint;
     storagePrefix: string;
-    segmentCount: number;
+    renditions: Array<{
+      name: string;
+      storagePrefix: string;
+      manifestKey: string;
+      segmentCount: number;
+    }>;
   }> {
     const bucket = workerEnvironment.S3_BUCKET_STREAMS;
-    const storagePrefix = `videos/${videoId}/hls/720p/`;
-    const fileNames = (await readdir(sourceDirectory)).filter((fileName) =>
-      /^(index\.m3u8|segment\d{3,6}\.ts)$/.test(fileName),
-    );
-    const segments = fileNames.filter((fileName) => fileName.endsWith('.ts'));
-    if (!fileNames.includes('index.m3u8') || segments.length === 0) {
+    const storagePrefix = `videos/${videoId}/hls/`;
+    const rootFiles = await readdir(sourceDirectory);
+    if (
+      !rootFiles.includes('master.m3u8') ||
+      renditionNames.length === 0 ||
+      new Set(renditionNames).size !== renditionNames.length ||
+      renditionNames.some((name) => !/^(source|360p|480p|720p)$/.test(name))
+    ) {
       throw new ProcessingError(
-        'FFmpeg did not produce a complete HLS rendition',
+        'The generated HLS rendition list is invalid',
         false,
         'The video could not be packaged for playback',
       );
     }
     try {
-      for (const fileName of segments.sort()) {
+      const renditions = [];
+      for (const name of renditionNames) {
+        const renditionDirectory = join(sourceDirectory, name);
+        const fileNames = await readdir(renditionDirectory);
+        const segments = fileNames
+          .filter((fileName) => /^segment\d{3,6}\.ts$/.test(fileName))
+          .sort();
+        if (!fileNames.includes('index.m3u8') || segments.length === 0) {
+          throw new ProcessingError(
+            `FFmpeg did not produce a complete ${name} HLS rendition`,
+            false,
+            'The video could not be packaged for playback',
+          );
+        }
+        const renditionPrefix = `${storagePrefix}${name}/`;
+        for (const fileName of segments) {
+          await this.uploadFile(
+            bucket,
+            `${renditionPrefix}${fileName}`,
+            join(renditionDirectory, fileName),
+            'video/mp2t',
+          );
+        }
+        const manifestKey = `${renditionPrefix}index.m3u8`;
         await this.uploadFile(
           bucket,
-          `${storagePrefix}${fileName}`,
-          join(sourceDirectory, fileName),
-          'video/mp2t',
+          manifestKey,
+          join(renditionDirectory, 'index.m3u8'),
+          'application/vnd.apple.mpegurl',
         );
+        renditions.push({
+          name,
+          storagePrefix: renditionPrefix,
+          manifestKey,
+          segmentCount: segments.length,
+        });
       }
-      const manifestKey = `${storagePrefix}index.m3u8`;
-      const manifestSizeBytes = await this.uploadFile(
+      const masterManifestKey = `${storagePrefix}master.m3u8`;
+      const masterManifestSizeBytes = await this.uploadFile(
         bucket,
-        manifestKey,
-        join(sourceDirectory, 'index.m3u8'),
+        masterManifestKey,
+        join(sourceDirectory, 'master.m3u8'),
         'application/vnd.apple.mpegurl',
       );
       return {
         bucket,
-        manifestKey,
-        manifestSizeBytes,
+        masterManifestKey,
+        masterManifestSizeBytes,
         storagePrefix,
-        segmentCount: segments.length,
+        renditions,
       };
     } catch (error) {
       if (error instanceof ProcessingError) throw error;

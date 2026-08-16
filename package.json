@@ -19,6 +19,7 @@
     "typecheck": "pnpm build:packages && pnpm prisma:generate && pnpm -r --if-present typecheck",
     "test": "pnpm build:packages && pnpm -r --if-present test",
     "test:integration": "pnpm --filter @youtube-clone/api test:integration",
+    "test:integration:media": "pnpm --filter @youtube-clone/worker test:integration",
     "test:e2e": "pnpm --filter @youtube-clone/web test:e2e",
     "test:e2e:media": "pnpm --filter @youtube-clone/web test:e2e:media",
     "format": "prettier --write .",

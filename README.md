@@ -18,13 +18,14 @@ Browser -- Next.js UI -- REST/session cookie --> NestJS modular monolith --> Pos
 
 The browser uploads large originals directly to S3-compatible MinIO. The API verifies the stored
 object and enqueues a versioned BullMQ job. A separately deployable worker validates media with
-ffprobe and creates a thumbnail plus one 720p-bounded HLS rendition. PostgreSQL remains authoritative
-for ownership, lifecycle, social state, playlists, history, and full-text search.
+ffprobe and creates a thumbnail plus a source-aware 360p/480p/720p adaptive HLS ladder and master
+playlist. PostgreSQL remains authoritative for ownership, lifecycle, social state, playlists,
+history, and full-text search.
 
 ## Product capabilities
 
 - Opaque server-side sessions and owned channels
-- Direct signed MP4 upload, FFmpeg processing, thumbnails, and HLS playback
+- Direct signed MP4 upload, FFmpeg processing, thumbnails, and adaptive HLS playback
 - Explicit video lifecycle with retry-safe jobs and deletion barriers
 - Home/subscription feeds, likes, comments, subscriptions, qualified views, history, and resume
 - PostgreSQL full-text search, related videos, playlists, and concurrency-safe Watch Later
@@ -57,8 +58,9 @@ docker compose --profile media up -d --build worker
 pnpm dev:app
 ```
 
-Do not run the host and Compose workers simultaneously. Local worker concurrency defaults to one
-because each FFmpeg process is CPU- and memory-intensive.
+Do not run the host and Compose workers simultaneously. Local worker concurrency defaults to one,
+and each job encodes its selected renditions sequentially, because FFmpeg already uses multiple CPU
+threads and parallel encoders can oversubscribe a developer laptop.
 
 The seed includes a READY metadata record so the fast UI/search E2E can exercise product workflows;
 it does not fabricate media bytes. Use the upload flow (or the media E2E) when demonstrating actual
@@ -72,6 +74,7 @@ pnpm typecheck
 pnpm test                 # unit and component tests
 pnpm build
 pnpm test:integration     # requires PostgreSQL and Redis
+pnpm test:integration:media # requires FFmpeg/ffprobe; real ABR generation
 pnpm test:e2e             # fast seeded browser workflow
 pnpm test:e2e:media       # opt-in real upload/FFmpeg/MinIO/HLS workflow
 pnpm format:check

@@ -6,6 +6,8 @@ interface ProbeStream {
   width?: number;
   height?: number;
   r_frame_rate?: string;
+  tags?: { rotate?: string };
+  side_data_list?: Array<{ rotation?: number }>;
 }
 
 interface ProbePayload {
@@ -26,6 +28,7 @@ export interface MediaMetadata {
   container: string;
   frameRate: number | null;
   bitrateKbps: number | null;
+  rotationDegrees: number;
 }
 
 export function parseProbeOutput(output: string): MediaMetadata {
@@ -51,6 +54,8 @@ export function parseProbeOutput(output: string): MediaMetadata {
     !video?.codec_name ||
     !video.width ||
     !video.height ||
+    video.width < 2 ||
+    video.height < 2 ||
     !Number.isFinite(durationSeconds) ||
     durationSeconds <= 0
   ) {
@@ -60,16 +65,28 @@ export function parseProbeOutput(output: string): MediaMetadata {
       'The uploaded file is not a usable video',
     );
   }
+  const rotationDegrees = parseRotation(video);
+  const swapsDimensions = Math.abs(rotationDegrees) % 180 === 90;
   return {
     durationSeconds,
-    width: video.width,
-    height: video.height,
+    width: swapsDimensions ? video.height : video.width,
+    height: swapsDimensions ? video.width : video.height,
     videoCodec: video.codec_name,
     audioCodec: audio?.codec_name ?? null,
     container: payload.format?.format_name ?? 'unknown',
     frameRate: parseFrameRate(video.r_frame_rate),
     bitrateKbps: parseBitrate(payload.format?.bit_rate),
+    rotationDegrees,
   };
+}
+
+function parseRotation(video: ProbeStream): number {
+  const raw =
+    video.side_data_list?.find((sideData) => Number.isFinite(sideData.rotation))
+      ?.rotation ?? Number(video.tags?.rotate ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+  const normalized = ((Math.round(raw) % 360) + 360) % 360;
+  return normalized > 180 ? normalized - 360 : normalized;
 }
 
 function parseFrameRate(value: string | undefined): number | null {

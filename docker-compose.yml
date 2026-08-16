@@ -100,6 +100,7 @@ services:
       FFMPEG_PATH: ffmpeg
       FFPROBE_PATH: ffprobe
       MEDIA_PROCESS_TIMEOUT_MS: ${MEDIA_PROCESS_TIMEOUT_MS:-900000}
+      MAX_VIDEO_DURATION_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-7200}
     restart: unless-stopped
 
 volumes:
