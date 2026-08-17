@@ -1,5 +1,21 @@
 # Decisions
 
+## Scope-appropriate trade-offs
+
+| Decision            | Chosen                  | Not chosen                | Why this fits the current project                                                                      |
+| ------------------- | ----------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Backend             | NestJS modular monolith | Microservices             | One deployable API keeps transactions and local operation clear while retaining module boundaries.     |
+| Queue               | BullMQ                  | Kafka                     | Redis-backed jobs provide the retries and concurrency needed by one media pipeline.                    |
+| Search              | PostgreSQL FTS          | Elasticsearch             | The existing database provides weighted search and indexing without another consistency boundary.      |
+| Processing status   | Polling                 | WebSockets                | A bounded two-second Studio poll is adequate for a single upload workflow and stops at terminal state. |
+| Client server state | TanStack Query          | Redux                     | Query caching and invalidation fit remote state; local UI state remains local.                         |
+| Media delivery      | HLS                     | Custom streaming protocol | Native Safari support plus hls.js provides adaptive playback using established tooling.                |
+| Storage             | S3-compatible MinIO     | Database blobs            | Object storage keeps large bytes outside transactional metadata storage.                               |
+| Reliability         | Transactional outbox    | Distributed transaction   | A narrow outbox closes the PostgreSQL/BullMQ dual-write gap with low operational cost.                 |
+
+These are workload and portfolio-scope choices, not claims that the alternatives are universally
+inferior.
+
 ## Server sessions and seeded development login
 
 Opaque server-side sessions provide revocation and keep credentials out of browser storage. Passwords
@@ -58,6 +74,8 @@ transaction. A tiny periodic publisher plus deterministic generation-specific jo
 crash window. Kafka was rejected: there is one asynchronous domain pipeline, BullMQ already provides
 delivery and retry behavior, and another distributed system would add more operational cost than
 capability. The outbox is intentionally not generalized beyond video processing.
+Published rows are retained for 30 days for recent operational inspection, then deleted by the API's
+daily best-effort cleanup. Unpublished rows are never removed by retention and continue to retry.
 
 ## Publishing semantics
 

@@ -102,4 +102,21 @@ describe('ProcessingOutboxPublisher', () => {
 
     await expect(publisher.publishPending()).resolves.toBeUndefined();
   });
+
+  it('removes only published events older than the retention window', async () => {
+    const deleteMany = vi.fn().mockResolvedValue({ count: 2 });
+    const publisher = new ProcessingOutboxPublisher(
+      { processingOutbox: { deleteMany } } as never,
+      {} as never,
+    );
+    const now = new Date('2026-08-17T12:00:00.000Z');
+
+    await publisher.cleanupPublished(now);
+
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: {
+        publishedAt: { lt: new Date('2026-07-18T12:00:00.000Z') },
+      },
+    });
+  });
 });

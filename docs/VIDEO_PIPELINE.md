@@ -19,6 +19,10 @@ same transaction. A lightweight API publisher later enqueues the versioned BullM
 Because the signed PUT remains usable until its 15-minute expiry, the worker compares the object's
 current content length with the API-verified ORIGINAL record before downloading it. A changed length
 is treated as invalid input; the downloaded bytes are still validated authoritatively by ffprobe.
+A same-length owner replacement during that short URL lifetime cannot be distinguished without an
+object version or client-provided digest. The random per-video object key limits the capability to
+that upload, and ffprobe remains authoritative, but immutable promotion or checksums would be the
+production hardening step.
 
 The worker claims UPLOADED as PROCESSING through the shared domain transition rules, then works in a
 unique `mkdtemp` directory:
@@ -131,6 +135,10 @@ gap: publication failure leaves `publishedAt = NULL`, so the current or a restar
 If publication succeeds but marking the row crashes, the deterministic BullMQ ID makes republishing
 idempotent. This is deliberately one table and one bounded periodic publisher for the only durable
 asynchronous domain pipeline; it is not a generic event bus.
+
+Published outbox rows remain available for 30 days, then a daily best-effort task deletes them.
+Unpublished rows are excluded from cleanup, so retention cannot discard work that still needs to be
+queued.
 
 ```text
 stale job generation=1

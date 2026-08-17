@@ -192,12 +192,18 @@ against the authenticated user server-side.
 
 ## What would change at YouTube scale?
 
-Scale—not missing project requirements—would drive a CDN and signed edge authorization, multi-region
-object storage, per-title/content-aware ladders, independent rendition jobs, specialized or hardware
-encoding workers, distributed orchestration, event streaming, sharded metadata stores, dedicated
-search and recommendation platforms, analytics pipelines, moderation, DRM/content protection, and
-explicit disaster recovery. The bounded in-memory home ranker would likely become an offline/online
-recommendation system with persisted candidate snapshots.
+**CURRENT PROJECT:** one Next.js application, one modular NestJS API, PostgreSQL, Redis/BullMQ, one
+FFmpeg worker boundary, and S3-compatible MinIO. This is deliberately operable by one developer and
+keeps the important consistency and authorization decisions visible.
+
+**YOUTUBE-SCALE EVOLUTION:** scale—not missing project requirements—would drive a CDN with signed
+edge authorization, multi-region object storage, a dedicated transcoding fleet with specialized or
+hardware workers, distributed orchestration and event streaming, sharded metadata, dedicated search
+and recommendation clusters, and offline/online candidate pipelines. Analytics would move into its
+own event and warehouse pipeline; rate limiting would become distributed and edge-aware; logs,
+metrics, traces, and alerting would move to an observability platform. Content moderation,
+DRM/content protection, tested backups, disaster recovery, and regional failover would become
+first-class operational systems.
 
 None of those additions improves the learning ROI of this single-developer application today.
 

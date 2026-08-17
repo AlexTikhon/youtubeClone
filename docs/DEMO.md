@@ -48,5 +48,6 @@ automatically if you want a rehearsal.
 - `docs/SEARCH.md` for ranking and query-plan nuance
 - `.github/workflows/ci.yml` for the verification pipeline
 
-The seeded READY card supports the fast product E2E but has no seeded media objects. Use a real upload
-when demonstrating playback; this keeps the repository free of committed binary video artifacts.
+The seeded Studio draft is explicitly metadata-only and never appears as a playable discovery card.
+Use a real upload when demonstrating playback; this keeps the repository honest and free of
+committed binary video artifacts.

@@ -8,7 +8,8 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
-    "setup": "pnpm install --frozen-lockfile && docker compose up -d && pnpm prisma:migrate:deploy && pnpm prisma:seed",
+    "setup": "pnpm install --frozen-lockfile && pnpm setup:infra && pnpm prisma:migrate:deploy && pnpm prisma:seed",
+    "setup:infra": "docker compose up -d --wait postgres redis minio && docker compose run --rm minio-init",
     "build:packages": "pnpm --filter \"./packages/*\" build",
     "dev": "pnpm build:packages && dotenv -e .env -- concurrently -n web,api,worker -c cyan,green,magenta \"pnpm --filter @youtube-clone/web dev\" \"pnpm --filter @youtube-clone/api dev\" \"pnpm --filter @youtube-clone/worker dev\"",
     "dev:app": "pnpm build:packages && dotenv -e .env -- concurrently -n web,api -c cyan,green \"pnpm --filter @youtube-clone/web dev\" \"pnpm --filter @youtube-clone/api dev\"",
@@ -24,6 +25,8 @@
     "test:e2e:media": "pnpm --filter @youtube-clone/web test:e2e:media",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "verify:full": "pnpm verify && pnpm test:integration && pnpm test:e2e",
     "prisma:generate": "dotenv -e .env -- pnpm --filter @youtube-clone/api prisma:generate",
     "prisma:migrate": "dotenv -e .env -- pnpm --filter @youtube-clone/api prisma:migrate",
     "prisma:migrate:deploy": "dotenv -e .env -- pnpm --filter @youtube-clone/api exec prisma migrate deploy",

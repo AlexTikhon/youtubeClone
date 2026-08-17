@@ -6,6 +6,9 @@ delivery, relational product state, ranked discovery, and a modern React client.
 feature-complete as a portfolio project; the goal is explainable engineering, not a pixel-perfect or
 YouTube-scale clone.
 
+**Project status: feature complete and portfolio ready.** Future changes are intentionally limited
+to targeted bug fixes and small experiments, not another product-feature phase.
+
 ## Architecture at a glance
 
 ```text
@@ -63,17 +66,15 @@ Do not run the host and Compose workers simultaneously. Local worker concurrency
 and each job encodes its selected renditions sequentially, because FFmpeg already uses multiple CPU
 threads and parallel encoders can oversubscribe a developer laptop.
 
-The seed includes a READY metadata record so the fast UI/search E2E can exercise product workflows;
-it does not fabricate media bytes. Use the upload flow (or the media E2E) when demonstrating actual
-playback.
+The seed includes a clearly labeled private DRAFT in Studio so a fresh checkout has understandable
+metadata without pretending media exists. It creates no thumbnail or HLS bytes and does not put a
+broken video on discovery surfaces. Use the upload flow (or the media E2E) to demonstrate playback.
 
 ## Verification
 
 ```bash
-pnpm lint
-pnpm typecheck
-pnpm test                 # unit and component tests
-pnpm build
+pnpm verify               # format, lint, typecheck, unit tests, build
+pnpm verify:full          # verify + API integration + fast browser E2E
 pnpm test:integration     # requires PostgreSQL and Redis
 pnpm test:integration:media # requires FFmpeg/ffprobe; real ABR generation
 pnpm test:e2e             # fast seeded browser workflow
@@ -81,6 +82,7 @@ pnpm test:e2e:media       # opt-in real upload/FFmpeg/MinIO/HLS workflow
 pnpm format:check
 ```
 
+`pnpm verify:full` assumes `pnpm setup` has prepared the local services and seed data.
 For the media suite, start the Compose worker first and set `RUN_MEDIA_E2E=true` as described in
 [the video pipeline guide](docs/VIDEO_PIPELINE.md).
 
@@ -91,6 +93,8 @@ instead of WebSockets, cursor pagination instead of offsets, and no application 
 choices match the demonstrated workload while keeping consistency and invalidation understandable.
 The processing outbox is intentionally narrow: it closes the PostgreSQL/BullMQ dual-write gap for the
 one asynchronous domain pipeline without introducing Kafka or a generic event framework.
+The CI workflow runs the fast verification set, API integration tests, and a separate Chromium job;
+real FFmpeg suites remain explicit because encoding videos on every push is disproportionate here.
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Video pipeline](docs/VIDEO_PIPELINE.md)

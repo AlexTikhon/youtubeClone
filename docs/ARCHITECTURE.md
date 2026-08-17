@@ -83,6 +83,11 @@ allow-listed route. Rendition names and filenames are strict allow lists, preven
 encoded traversal, absolute paths, or cross-video prefixes. It adds API bandwidth, which is
 acceptable for this home phase; a production CDN with signed cookies/URLs is a later optimization.
 
+The web and API set `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, and a small
+`Permissions-Policy`. A strict Content Security Policy is intentionally deferred to deployment work:
+it must be tested against Next.js runtime scripts and authorized HLS requests rather than added with
+unsafe exceptions or allowed to break playback.
+
 ## Client structure
 
 React Query owns session, collection, and video server state. Processing polling runs every two
@@ -140,6 +145,9 @@ process liveness and readiness across PostgreSQL, Redis/BullMQ, MinIO buckets, F
 FFmpeg is intentionally not an API readiness dependency. Structured processing events consistently
 carry video ID, generation, correlation/job identity, Bull attempt, rendition, and duration where
 applicable; browser-safe failure reasons are distinct from internal diagnostic logs.
+Published processing-outbox records have a 30-day inspection window and daily best-effort cleanup;
+unpublished events remain durable until successfully queued. Database state is authoritative during
+storage failure, while object deletion and stale-generation cleanup remain idempotent best effort.
 
 ## Discovery and playlists
 

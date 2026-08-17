@@ -8,11 +8,14 @@ test('keeps primary navigation available at a mobile viewport', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto('/');
+  const documentResponse = await page.goto('/');
+  expect(documentResponse?.headers()['x-content-type-options']).toBe('nosniff');
+  expect(documentResponse?.headers()['x-frame-options']).toBe('DENY');
   const readiness = await page.request.get(
     `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'}/api/v1/health/ready`,
   );
   expect(readiness.ok()).toBe(true);
+  expect(readiness.headers()['x-content-type-options']).toBe('nosniff');
   await expect(readiness.json()).resolves.toMatchObject({
     status: 'ok',
     dependencies: { postgres: { status: 'up' }, redis: { status: 'up' } },
@@ -23,7 +26,7 @@ test('keeps primary navigation available at a mobile viewport', async ({
   await expect(navigation.getByRole('link', { name: 'History' })).toBeVisible();
 });
 
-test('supports skip navigation and keyboard search-to-watch navigation', async ({
+test('supports skip navigation and keyboard search navigation', async ({
   page,
 }) => {
   await page.goto('/');
@@ -35,20 +38,13 @@ test('supports skip navigation and keyboard search-to-watch navigation', async (
 
   const search = page.getByLabel('Search videos');
   await search.focus();
-  await search.fill('React Architecture');
+  await search.fill('nonexistent release candidate');
   await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/\/search\?q=React%20Architecture/);
-  const result = page
-    .getByRole('link', { name: /React Architecture in Practice/ })
-    .first();
-  await result.focus();
-  await page.keyboard.press('Enter');
-  await expect(
-    page.getByRole('heading', { name: 'React Architecture in Practice' }),
-  ).toBeVisible();
+  await expect(page).toHaveURL(/\/search\?q=nonexistent%20release%20candidate/);
+  await expect(page.getByText('No videos matched this search.')).toBeVisible();
 });
 
-test('login, search, like, and save a seeded video to Watch Later', async ({
+test('login and browse honest metadata-only development state', async ({
   page,
 }) => {
   await page.goto('/login');
@@ -59,32 +55,15 @@ test('login, search, like, and save a seeded video to Watch Later', async ({
   await page.getByRole('button', { name: 'Log in' }).click();
   await expect(page).toHaveURL(/\/$/);
 
-  await page.getByLabel('Search videos').fill('React Architecture');
-  await page.getByLabel('Search videos').press('Enter');
-  await expect(page).toHaveURL(/\/search\?q=React%20Architecture/);
-  await page
-    .getByRole('link', { name: /React Architecture in Practice/ })
-    .first()
-    .press('Enter');
-  await expect(
-    page.getByRole('heading', { name: 'React Architecture in Practice' }),
-  ).toBeVisible();
-
-  await page.getByRole('button', { name: /^Like/ }).press('Enter');
-  await page.getByRole('button', { name: 'Save' }).press('Enter');
-  const watchLater = page.getByLabel('Watch Later');
-  if (!(await watchLater.isChecked())) await watchLater.click();
-  await expect(watchLater).toBeChecked();
-  await page.getByLabel('Close').click();
-
+  await page.goto('/studio');
+  const demoHeading = page.getByRole('heading', {
+    name: 'Demo metadata only — upload an MP4 to create playable media',
+  });
+  await expect(demoHeading).toBeVisible();
+  const demoCard = page.getByRole('article').filter({ has: demoHeading });
+  await expect(demoCard.getByText(/DRAFT.*PRIVATE/)).toBeVisible();
   await page.goto('/playlists');
-  await page.getByRole('link', { name: /Watch Later/ }).click();
-  await expect(
-    page.getByRole('link', {
-      name: 'React Architecture in Practice',
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect(page.getByRole('link', { name: /Watch Later/ })).toBeVisible();
 });
 
 test('@media upload, transcode, and open HLS playback', async ({ page }) => {

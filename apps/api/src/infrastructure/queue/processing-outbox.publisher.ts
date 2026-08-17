@@ -12,6 +12,8 @@ import {
 
 const PUBLISH_INTERVAL_MS = 1_000;
 const PUBLISH_BATCH_SIZE = 20;
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+const PUBLISHED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 @Injectable()
 export class ProcessingOutboxPublisher
@@ -19,6 +21,7 @@ export class ProcessingOutboxPublisher
 {
   private readonly logger = new Logger(ProcessingOutboxPublisher.name);
   private timer?: ReturnType<typeof setInterval>;
+  private cleanupTimer?: ReturnType<typeof setInterval>;
   private publishing = false;
 
   constructor(
@@ -33,11 +36,41 @@ export class ProcessingOutboxPublisher
       PUBLISH_INTERVAL_MS,
     );
     this.timer.unref();
+    this.cleanupTimer = setInterval(
+      () => void this.cleanupPublished(),
+      CLEANUP_INTERVAL_MS,
+    );
+    this.cleanupTimer.unref();
     void this.publishPending();
+    void this.cleanupPublished();
   }
 
   onApplicationShutdown(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+  }
+
+  async cleanupPublished(now = new Date()): Promise<void> {
+    try {
+      const result = await this.prisma.processingOutbox.deleteMany({
+        where: {
+          publishedAt: {
+            lt: new Date(now.getTime() - PUBLISHED_RETENTION_MS),
+          },
+        },
+      });
+      if (result.count > 0) {
+        this.logger.log({
+          event: 'video.processing.outbox_cleaned',
+          deletedCount: result.count,
+        });
+      }
+    } catch (error) {
+      this.logger.warn({
+        event: 'video.processing.outbox_cleanup_failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async publishPending(): Promise<void> {

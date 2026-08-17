@@ -14,9 +14,11 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY packages/validation/package.json packages/validation/package.json
 RUN pnpm install --frozen-lockfile
 
-COPY . .
+COPY --chown=node:node . .
 RUN pnpm build:packages \
   && pnpm prisma:generate \
   && pnpm --filter @youtube-clone/worker build
 
-CMD ["pnpm", "--filter", "@youtube-clone/worker", "start"]
+USER node
+
+CMD ["node", "apps/worker/dist/main.js"]

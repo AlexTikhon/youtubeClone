@@ -3,6 +3,7 @@ import 'reflect-metadata';
 import { ConsoleLogger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import type { NextFunction, Request, Response } from 'express';
 
 import type { ApiEnvironment } from '@youtube-clone/config';
 
@@ -18,6 +19,16 @@ async function bootstrap(): Promise<void> {
   const environment = app.get<ApiEnvironment>(API_ENVIRONMENT);
   app.setGlobalPrefix('api/v1');
   app.enableCors({ origin: environment.WEB_URL, credentials: true });
+  app.use((_request: Request, response: Response, next: NextFunction) => {
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    response.setHeader('X-Frame-Options', 'DENY');
+    response.setHeader(
+      'Permissions-Policy',
+      'camera=(), microphone=(), geolocation=()',
+    );
+    next();
+  });
   app.enableShutdownHooks();
   app.useGlobalFilters(new ApiExceptionFilter());
   app.useGlobalInterceptors(new RequestLoggingInterceptor());
