@@ -16,7 +16,7 @@ export function PlaylistPanel({
   videoEnded: boolean;
 }) {
   const playlist = useQuery({
-    queryKey: queryKeys.playlist(playlistId),
+    queryKey: queryKeys.playlist.detail(playlistId),
     queryFn: () =>
       apiRequest<PlaylistDetailDto>(`/api/v1/playlists/${playlistId}`),
     retry: false,

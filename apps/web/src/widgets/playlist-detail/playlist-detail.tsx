@@ -10,13 +10,15 @@ import type {
 import { VideoCard } from '@/entities/video/video-card';
 import { apiRequest } from '@/shared/api/api-client';
 import { queryKeys } from '@/shared/query/query-keys';
+import { AccessibleDialog } from '@/shared/ui/accessible-dialog';
+import { InlineError, PageSkeleton } from '@/shared/ui/async-state';
 
 export function PlaylistDetail({ playlistId }: { playlistId: string }) {
   const queryClient = useQueryClient();
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const playlist = useQuery({
-    queryKey: queryKeys.playlist(playlistId),
+    queryKey: queryKeys.playlist.detail(playlistId),
     queryFn: () =>
       apiRequest<PlaylistDetailDto>(`/api/v1/playlists/${playlistId}`),
     retry: false,
@@ -28,21 +30,27 @@ export function PlaylistDetail({ playlistId }: { playlistId: string }) {
       }),
     onSuccess: () =>
       queryClient.invalidateQueries({
-        queryKey: queryKeys.playlist(playlistId),
+        queryKey: queryKeys.playlist.detail(playlistId),
       }),
   });
   const removePlaylist = useMutation({
     mutationFn: () =>
       apiRequest(`/api/v1/playlists/${playlistId}`, { method: 'DELETE' }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.playlists });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.playlist.lists,
+      });
       router.push('/playlists');
     },
   });
-  if (playlist.isPending)
-    return <p className="text-zinc-400">Loading playlist...</p>;
+  if (playlist.isPending) return <PageSkeleton variant="list" />;
   if (playlist.isError)
-    return <p className="text-red-400">Playlist was not found.</p>;
+    return (
+      <InlineError
+        message="Playlist could not be loaded. It may be private or unavailable."
+        onRetry={() => void playlist.refetch()}
+      />
+    );
   return (
     <div>
       <header className="mb-8 rounded-2xl bg-zinc-900 p-7">
@@ -81,6 +89,11 @@ export function PlaylistDetail({ playlistId }: { playlistId: string }) {
             )}
         </div>
       </header>
+      {(removeVideo.isError || removePlaylist.isError) && (
+        <div className="mb-6">
+          <InlineError message="The playlist change could not be completed." />
+        </div>
+      )}
       {!playlist.data.videos.length && (
         <p className="rounded-2xl border border-dashed border-zinc-700 p-12 text-center text-zinc-400">
           This playlist has no playable videos.
@@ -142,7 +155,7 @@ function EditPlaylist({
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.playlist(playlist.id),
+        queryKey: queryKeys.playlist.detail(playlist.id),
       });
       onClose();
     },
@@ -152,16 +165,14 @@ function EditPlaylist({
     update.mutate();
   };
   return (
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6"
-      role="dialog"
-    >
+    <AccessibleDialog labelId="edit-playlist-title" onClose={onClose}>
       <form
         className="w-full max-w-lg space-y-4 rounded-2xl bg-zinc-900 p-7"
         onSubmit={submit}
       >
-        <h2 className="text-xl font-bold">Edit playlist</h2>
+        <h2 className="text-xl font-bold" id="edit-playlist-title">
+          Edit playlist
+        </h2>
         <label className="block text-sm">
           Title
           <input
@@ -172,6 +183,11 @@ function EditPlaylist({
             value={title}
           />
         </label>
+        {update.isError && (
+          <p className="text-sm text-red-400" role="alert">
+            The playlist could not be updated.
+          </p>
+        )}
         <label className="block text-sm">
           Description
           <textarea
@@ -207,10 +223,10 @@ function EditPlaylist({
             disabled={update.isPending}
             type="submit"
           >
-            Save
+            {update.isPending ? 'Saving…' : 'Save'}
           </button>
         </div>
       </form>
-    </div>
+    </AccessibleDialog>
   );
 }

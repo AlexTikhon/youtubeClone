@@ -5,7 +5,7 @@ import { queryKeys } from './query-keys';
 
 export function useCurrentUser() {
   return useQuery({
-    queryKey: queryKeys.auth,
+    queryKey: queryKeys.auth.currentUser,
     queryFn: () => apiRequest<AuthenticatedUserResponse>('/api/v1/auth/me'),
     retry: false,
   });

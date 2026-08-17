@@ -4,6 +4,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 
 import { apiRequest } from '@/shared/api/api-client';
+import { ApiClientError } from '@/shared/api/api-error';
+import { queryKeys } from '@/shared/query/query-keys';
 import { useCurrentUser } from '@/shared/query/use-current-user';
 
 export function AuthStatus() {
@@ -12,11 +14,23 @@ export function AuthStatus() {
   const logout = useMutation({
     mutationFn: () =>
       apiRequest<{ success: true }>('/api/v1/auth/logout', { method: 'POST' }),
-    onSettled: () => {
+    onSuccess: () => {
       queryClient.clear();
-      queryClient.setQueryData(['auth', 'me'], null);
+      queryClient.setQueryData(queryKeys.auth.currentUser, null);
     },
   });
+  if (user.isPending)
+    return (
+      <span className="text-sm text-zinc-500" role="status">
+        Checking session…
+      </span>
+    );
+  if (
+    user.isError &&
+    !(user.error instanceof ApiClientError && user.error.status === 401)
+  ) {
+    return <span className="text-sm text-zinc-500">Session unavailable</span>;
+  }
   if (!user.data)
     return (
       <Link
@@ -37,8 +51,13 @@ export function AuthStatus() {
         onClick={() => logout.mutate()}
         type="button"
       >
-        Log out
+        {logout.isPending ? 'Logging out…' : 'Log out'}
       </button>
+      {logout.isError && (
+        <span className="text-red-400" role="alert">
+          Could not log out.
+        </span>
+      )}
     </div>
   );
 }

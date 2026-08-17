@@ -13,6 +13,7 @@ import type {
 import { apiRequest } from '@/shared/api/api-client';
 import { uploadFile } from '@/shared/upload/upload-file';
 import { queryKeys } from '@/shared/query/query-keys';
+import { getApiErrorPresentation } from '@/shared/api/api-error';
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
@@ -21,6 +22,13 @@ export function validateVideoFile(file: File): string | null {
   if (file.type !== 'video/mp4') return 'Choose an MP4 video file.';
   if (file.size > MAX_FILE_SIZE) return 'The video exceeds the 2 GB limit.';
   return null;
+}
+
+function uploadErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return 'Upload cancelled.';
+  }
+  return getApiErrorPresentation(error, fallback).message;
 }
 
 type UploadPhase =
@@ -94,9 +102,7 @@ export function VideoUploadForm() {
       } else {
         setPhase('error');
         setError(
-          uploadError instanceof Error
-            ? uploadError.message
-            : 'The upload could not be completed.',
+          uploadErrorMessage(uploadError, 'The upload could not be completed.'),
         );
       }
     } finally {
@@ -124,9 +130,10 @@ export function VideoUploadForm() {
     } catch (createError) {
       setPhase('error');
       setError(
-        createError instanceof Error
-          ? createError.message
-          : 'The video draft could not be created.',
+        uploadErrorMessage(
+          createError,
+          'The video draft could not be created.',
+        ),
       );
     }
   }
@@ -141,7 +148,7 @@ export function VideoUploadForm() {
       >
         <div>
           <h1 className="text-2xl font-bold">Upload a video</h1>
-          <p className="mt-2 text-sm text-zinc-400">
+          <p className="mt-2 text-sm text-zinc-400" id="upload-help">
             MP4, up to 2 GB. Uploads go directly to local object storage.
           </p>
         </div>
@@ -149,6 +156,8 @@ export function VideoUploadForm() {
           Video file
           <input
             accept="video/mp4,.mp4"
+            aria-describedby="upload-help upload-error"
+            aria-invalid={Boolean(error && !file)}
             className="field mt-2 file:mr-4 file:rounded-md file:border-0 file:bg-zinc-700 file:px-3 file:py-2 file:text-white"
             disabled={busy || Boolean(context)}
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
@@ -158,6 +167,8 @@ export function VideoUploadForm() {
         <label className="block text-sm text-zinc-300">
           Title
           <input
+            aria-describedby="upload-error"
+            aria-invalid={Boolean(error && !title.trim())}
             className="field mt-2"
             disabled={busy || Boolean(context)}
             maxLength={120}
@@ -217,17 +228,30 @@ export function VideoUploadForm() {
             Retry upload safely
           </button>
         )}
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && (
+          <p className="text-sm text-red-400" id="upload-error" role="alert">
+            {error}
+          </p>
+        )}
       </form>
       <aside className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
         <h2 className="font-semibold">Progress</h2>
-        <div className="mt-6 h-2 overflow-hidden rounded bg-zinc-800">
+        <div
+          aria-label="Upload progress"
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={progress}
+          className="mt-6 h-2 overflow-hidden rounded bg-zinc-800"
+          role="progressbar"
+        >
           <div
             className="h-full bg-red-600 transition-all"
             style={{ width: `${progress}%` }}
           />
         </div>
-        <p className="mt-3 text-sm text-zinc-400">{progress}% uploaded</p>
+        <p aria-live="polite" className="mt-3 text-sm text-zinc-400">
+          {progress}% uploaded
+        </p>
         <ol className="mt-6 space-y-3 text-sm text-zinc-400">
           <li className={context ? 'text-white' : ''}>1. Draft created</li>
           <li className={progress === 100 ? 'text-white' : ''}>

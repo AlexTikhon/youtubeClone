@@ -11,15 +11,19 @@ import type {
   OwnerVideoDto,
   VideoVisibility,
 } from '@youtube-clone/types';
-import { apiRequest, resolveApiUrl } from '@/shared/api/api-client';
+import { apiRequest } from '@/shared/api/api-client';
 import { formatCount, formatRelativeDate } from '@/shared/format/format';
+import { queryKeys } from '@/shared/query/query-keys';
+import { MediaThumbnail } from '@/shared/ui/media-thumbnail';
+import { EmptyState, InlineError, PageSkeleton } from '@/shared/ui/async-state';
+import { AccessibleDialog } from '@/shared/ui/accessible-dialog';
 
 export function StudioVideos() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<OwnerVideoDto | null>(null);
   const [deleting, setDeleting] = useState<OwnerVideoDto | null>(null);
   const videos = useInfiniteQuery({
-    queryKey: ['studio', 'videos'],
+    queryKey: queryKeys.studio.videos,
     initialPageParam: '',
     queryFn: ({ pageParam }) =>
       apiRequest<CursorPage<OwnerVideoDto>>(
@@ -42,18 +46,23 @@ export function StudioVideos() {
         method: 'POST',
       }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['studio', 'videos'] });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.studio.videos,
+      });
     },
   });
   const remove = useMutation({
-    mutationFn: (id: string) =>
-      apiRequest(`/api/v1/videos/${id}`, { method: 'DELETE' }),
-    onSuccess: async () => {
+    mutationFn: (video: OwnerVideoDto) =>
+      apiRequest(`/api/v1/videos/${video.id}`, { method: 'DELETE' }),
+    onSuccess: async (_result, video) => {
       setDeleting(null);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['studio', 'videos'] }),
-        queryClient.invalidateQueries({ queryKey: ['feed'] }),
-        queryClient.invalidateQueries({ queryKey: ['channel'] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.studio.videos }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.feed.all }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.channel.videos(video.channel.handle),
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.search.all }),
       ]);
     },
   });
@@ -74,14 +83,15 @@ export function StudioVideos() {
           Upload
         </Link>
       </div>
-      {videos.isPending && (
-        <p className="text-zinc-400">Loading your videos…</p>
+      {videos.isPending && <PageSkeleton variant="list" />}
+      {videos.isError && (
+        <InlineError
+          message="Studio could not be loaded. Log in and try again."
+          onRetry={() => void videos.refetch()}
+        />
       )}
-      {videos.isError && <p className="text-red-400">Log in to open Studio.</p>}
       {!videos.isPending && !videos.isError && !rows.length && (
-        <div className="rounded-2xl border border-dashed border-zinc-700 p-12 text-center text-zinc-400">
-          No uploaded videos.
-        </div>
+        <EmptyState title="No uploaded videos." />
       )}
       <div className="space-y-4">
         {rows.map((video) => (
@@ -90,13 +100,7 @@ export function StudioVideos() {
             key={video.id}
           >
             <div className="aspect-video overflow-hidden rounded-lg bg-zinc-800">
-              {video.thumbnailUrl && (
-                <img
-                  alt=""
-                  className="h-full w-full object-cover"
-                  src={resolveApiUrl(video.thumbnailUrl)}
-                />
-              )}
+              <MediaThumbnail src={video.thumbnailUrl} />
             </div>
             <div>
               <h2 className="font-semibold">{video.title}</h2>
@@ -121,24 +125,34 @@ export function StudioVideos() {
                   </p>
                   {retryProcessing.isError &&
                     retryProcessing.variables === video.id && (
-                      <p className="mt-2">{retryProcessing.error.message}</p>
+                      <p className="mt-2" role="alert">
+                        Processing could not be restarted. Please try again.
+                      </p>
                     )}
                 </div>
               )}
             </div>
-            <div className="flex gap-3 sm:flex-col">
+            <div className="flex flex-wrap gap-3 sm:flex-col">
               {video.status === 'FAILED' && (
-                <button
-                  className="rounded bg-red-600 px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
-                  disabled={retryProcessing.isPending}
-                  onClick={() => retryProcessing.mutate(video.id)}
-                  type="button"
-                >
-                  {retryProcessing.isPending &&
-                  retryProcessing.variables === video.id
-                    ? 'Retrying…'
-                    : 'Retry processing'}
-                </button>
+                <>
+                  <button
+                    className="rounded bg-red-600 px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
+                    disabled={retryProcessing.isPending}
+                    onClick={() => retryProcessing.mutate(video.id)}
+                    type="button"
+                  >
+                    {retryProcessing.isPending &&
+                    retryProcessing.variables === video.id
+                      ? 'Retrying…'
+                      : 'Retry processing'}
+                  </button>
+                  {retryProcessing.isSuccess &&
+                    retryProcessing.variables === video.id && (
+                      <span className="sr-only" role="status">
+                        Processing retry started.
+                      </span>
+                    )}
+                </>
               )}
               <button
                 className="rounded border border-zinc-700 px-3 py-1.5 text-sm"
@@ -171,20 +185,21 @@ export function StudioVideos() {
         <EditVideoDialog onClose={() => setEditing(null)} video={editing} />
       )}
       {deleting && (
-        <div
-          aria-modal="true"
-          className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6"
-          role="dialog"
+        <AccessibleDialog
+          labelId="delete-video-title"
+          onClose={() => setDeleting(null)}
         >
           <div className="max-w-md rounded-2xl bg-zinc-900 p-7">
-            <h2 className="text-xl font-bold">
+            <h2 className="text-xl font-bold" id="delete-video-title">
               Delete &quot;{deleting.title}&quot;?
             </h2>
             <p className="mt-3 text-zinc-400">
               This removes the video and its media assets.
             </p>
             {remove.isError && (
-              <p className="mt-3 text-red-400">{remove.error.message}</p>
+              <p className="mt-3 text-red-400" role="alert">
+                The video could not be deleted. Please try again.
+              </p>
             )}
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -197,14 +212,14 @@ export function StudioVideos() {
               <button
                 className="rounded bg-red-600 px-4 py-2 font-semibold"
                 disabled={remove.isPending}
-                onClick={() => remove.mutate(deleting.id)}
+                onClick={() => remove.mutate(deleting)}
                 type="button"
               >
                 {remove.isPending ? 'Deleting…' : 'Delete'}
               </button>
             </div>
           </div>
-        </div>
+        </AccessibleDialog>
       )}
     </div>
   );
@@ -231,10 +246,15 @@ function EditVideoDialog({
       }),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['studio', 'videos'] }),
-        queryClient.invalidateQueries({ queryKey: ['feed'] }),
-        queryClient.invalidateQueries({ queryKey: ['channel'] }),
-        queryClient.invalidateQueries({ queryKey: ['video', video.id] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.studio.videos }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.feed.all }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.channel.detail(video.channel.handle),
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.search.all }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.video.detail(video.id),
+        }),
       ]);
       onClose();
     },
@@ -244,16 +264,14 @@ function EditVideoDialog({
     update.mutate();
   };
   return (
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6"
-      role="dialog"
-    >
+    <AccessibleDialog labelId="edit-video-title" onClose={onClose}>
       <form
         className="w-full max-w-lg space-y-4 rounded-2xl bg-zinc-900 p-7"
         onSubmit={submit}
       >
-        <h2 className="text-xl font-bold">Edit video</h2>
+        <h2 className="text-xl font-bold" id="edit-video-title">
+          Edit video
+        </h2>
         <label className="block text-sm">
           Title
           <input
@@ -288,7 +306,9 @@ function EditVideoDialog({
           </select>
         </label>
         {update.isError && (
-          <p className="text-red-400">{update.error.message}</p>
+          <p className="text-red-400" role="alert">
+            The video could not be updated. Please try again.
+          </p>
         )}
         <div className="flex justify-end gap-3">
           <button
@@ -303,10 +323,10 @@ function EditVideoDialog({
             disabled={update.isPending}
             type="submit"
           >
-            Save
+            {update.isPending ? 'Saving…' : 'Save'}
           </button>
         </div>
       </form>
-    </div>
+    </AccessibleDialog>
   );
 }

@@ -10,6 +10,8 @@ import type { CommentDto, CursorPage } from '@youtube-clone/types';
 import { apiRequest } from '@/shared/api/api-client';
 import { ApiClientError } from '@/shared/api/api-error';
 import { formatRelativeDate } from '@/shared/format/format';
+import { queryKeys } from '@/shared/query/query-keys';
+import { EmptyState, InlineError } from '@/shared/ui/async-state';
 
 export function CommentsSection({
   videoId,
@@ -18,12 +20,13 @@ export function CommentsSection({
   videoId: string;
   commentsCount: number;
 }) {
-  const key = ['comments', videoId] as const;
+  const key = queryKeys.video.comments(videoId);
   const queryClient = useQueryClient();
   const router = useRouter();
   const [content, setContent] = useState('');
   const comments = useInfiniteQuery({
     queryKey: key,
+    throwOnError: false,
     initialPageParam: '',
     queryFn: ({ pageParam }) =>
       apiRequest<CursorPage<CommentDto>>(
@@ -41,7 +44,9 @@ export function CommentsSection({
       setContent('');
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: key }),
-        queryClient.invalidateQueries({ queryKey: ['video', videoId] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.video.detail(videoId),
+        }),
       ]);
     },
     onError: (error) => {
@@ -55,7 +60,9 @@ export function CommentsSection({
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: key }),
-        queryClient.invalidateQueries({ queryKey: ['video', videoId] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.video.detail(videoId),
+        }),
       ]),
   });
   const data = comments.data?.pages.flatMap((page) => page.data) ?? [];
@@ -71,6 +78,8 @@ export function CommentsSection({
           Add comment
         </label>
         <textarea
+          aria-describedby={create.isError ? 'comment-error' : undefined}
+          aria-invalid={create.isError}
           id="new-comment"
           className="field min-h-20 flex-1 resize-y"
           maxLength={2000}
@@ -90,18 +99,39 @@ export function CommentsSection({
         !(
           create.error instanceof ApiClientError && create.error.status === 401
         ) && (
-          <p className="mt-2 text-sm text-red-400">{create.error.message}</p>
+          <p
+            className="mt-2 text-sm text-red-400"
+            id="comment-error"
+            role="alert"
+          >
+            Could not post your comment. Please try again.
+          </p>
         )}
       {comments.isPending && (
-        <p className="mt-6 text-zinc-400">Loading comments…</p>
+        <p aria-live="polite" className="mt-6 text-zinc-400" role="status">
+          Loading comments…
+        </p>
       )}
       {comments.isError && (
-        <p className="mt-6 text-red-400">Could not load comments.</p>
+        <div className="mt-6">
+          <InlineError
+            message="Could not load comments."
+            onRetry={() => void comments.refetch()}
+          />
+        </div>
       )}
-      {!comments.isPending && !data.length && (
-        <p className="mt-6 text-zinc-400">No comments yet.</p>
+      {!comments.isPending && !comments.isError && !data.length && (
+        <div className="mt-6">
+          <EmptyState
+            title="No comments yet"
+            description="Start the conversation."
+          />
+        </div>
       )}
       <div className="mt-7 space-y-6">
+        {remove.isError && (
+          <InlineError message="The comment could not be deleted." />
+        )}
         {data.map((comment) => (
           <article className="flex gap-3" key={comment.id}>
             <div className="grid size-9 shrink-0 place-items-center rounded-full bg-zinc-700">
@@ -134,10 +164,11 @@ export function CommentsSection({
       {comments.hasNextPage && (
         <button
           className="mt-7 rounded-lg border border-zinc-700 px-4 py-2"
+          disabled={comments.isFetchingNextPage}
           onClick={() => void comments.fetchNextPage()}
           type="button"
         >
-          Load more comments
+          {comments.isFetchingNextPage ? 'Loading…' : 'Load more comments'}
         </button>
       )}
     </section>

@@ -12,8 +12,10 @@ import type {
   PlaylistSummaryDto,
   PlaylistVisibility,
 } from '@youtube-clone/types';
-import { apiRequest, resolveApiUrl } from '@/shared/api/api-client';
+import { apiRequest } from '@/shared/api/api-client';
 import { queryKeys } from '@/shared/query/query-keys';
+import { MediaThumbnail } from '@/shared/ui/media-thumbnail';
+import { EmptyState, InlineError, PageSkeleton } from '@/shared/ui/async-state';
 
 export function PlaylistList() {
   const queryClient = useQueryClient();
@@ -21,7 +23,7 @@ export function PlaylistList() {
   const [title, setTitle] = useState('');
   const [visibility, setVisibility] = useState<PlaylistVisibility>('PRIVATE');
   const playlists = useInfiniteQuery({
-    queryKey: queryKeys.playlistMine(),
+    queryKey: queryKeys.playlist.mine(),
     initialPageParam: '',
     retry: false,
     queryFn: ({ pageParam }) =>
@@ -39,7 +41,9 @@ export function PlaylistList() {
     onSuccess: async () => {
       setTitle('');
       setCreating(false);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.playlists });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.playlist.lists,
+      });
     },
   });
   const submit = (event: FormEvent) => {
@@ -95,18 +99,22 @@ export function PlaylistList() {
           >
             Create
           </button>
+          {create.isError && (
+            <p className="text-sm text-red-400 sm:col-span-3" role="alert">
+              The playlist could not be created. Please try again.
+            </p>
+          )}
         </form>
       )}
-      {playlists.isPending && (
-        <p className="text-zinc-400">Loading playlists...</p>
-      )}
+      {playlists.isPending && <PageSkeleton variant="list" />}
       {playlists.isError && (
-        <p className="text-red-400">Log in to view your playlists.</p>
+        <InlineError
+          message="Playlists could not be loaded. Log in and try again."
+          onRetry={() => void playlists.refetch()}
+        />
       )}
       {!playlists.isPending && !playlists.isError && !rows.length && (
-        <p className="rounded-2xl border border-dashed border-zinc-700 p-12 text-center text-zinc-400">
-          No playlists yet.
-        </p>
+        <EmptyState title="No playlists yet." />
       )}
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((playlist) => (
@@ -116,13 +124,10 @@ export function PlaylistList() {
             key={playlist.id}
           >
             <div className="aspect-video overflow-hidden rounded-xl bg-zinc-800">
-              {playlist.coverThumbnailUrl && (
-                <img
-                  alt=""
-                  className="h-full w-full object-cover transition group-hover:scale-[1.02]"
-                  src={resolveApiUrl(playlist.coverThumbnailUrl)}
-                />
-              )}
+              <MediaThumbnail
+                className="transition-transform group-hover:scale-[1.02] group-focus-visible:scale-[1.02]"
+                src={playlist.coverThumbnailUrl}
+              />
             </div>
             <h2 className="mt-3 font-semibold group-hover:text-red-300">
               {playlist.title}

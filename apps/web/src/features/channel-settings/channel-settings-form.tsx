@@ -4,19 +4,30 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import type { ChannelDto } from '@youtube-clone/types';
 import { apiRequest } from '@/shared/api/api-client';
+import { getApiErrorPresentation } from '@/shared/api/api-error';
 import { queryKeys } from '@/shared/query/query-keys';
+import { InlineError, PageSkeleton } from '@/shared/ui/async-state';
 
 export function ChannelSettingsForm() {
   const queryClient = useQueryClient();
   const channel = useQuery({
-    queryKey: queryKeys.channelMine,
+    queryKey: queryKeys.channel.mine,
     queryFn: () => apiRequest<ChannelDto>('/api/v1/channels/mine/settings'),
     retry: false,
   });
-  if (channel.isPending)
-    return <p className="text-zinc-400">Loading channel settings...</p>;
+  if (channel.isPending) return <PageSkeleton variant="list" />;
   if (channel.isError)
-    return <p className="text-red-400">Log in to edit your channel.</p>;
+    return (
+      <InlineError
+        message={
+          getApiErrorPresentation(
+            channel.error,
+            'Could not load channel settings.',
+          ).message
+        }
+        onRetry={() => void channel.refetch()}
+      />
+    );
   return (
     <LoadedChannelSettings channel={channel.data} queryClient={queryClient} />
   );
@@ -38,13 +49,13 @@ function LoadedChannelSettings({
         body: { name, description },
       }),
     onSuccess: async (result) => {
-      queryClient.setQueryData(queryKeys.channelMine, result);
+      queryClient.setQueryData(queryKeys.channel.mine, result);
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: queryKeys.channel(channel.handle),
+          queryKey: queryKeys.channel.detail(channel.handle),
         }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.feeds }),
-        queryClient.invalidateQueries({ queryKey: ['search'] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.feed.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.search.all }),
       ]);
     },
   });
@@ -78,15 +89,26 @@ function LoadedChannelSettings({
       </label>
       <p className="text-sm text-zinc-500">Handle: @{channel.handle} (fixed)</p>
       {update.isError && (
-        <p className="text-red-400">Could not update the channel.</p>
+        <p className="text-red-400" role="alert">
+          {
+            getApiErrorPresentation(
+              update.error,
+              'Could not update the channel.',
+            ).message
+          }
+        </p>
       )}
-      {update.isSuccess && <p className="text-green-400">Channel updated.</p>}
+      {update.isSuccess && (
+        <p aria-live="polite" className="text-green-400">
+          Channel updated.
+        </p>
+      )}
       <button
-        className="rounded-lg bg-red-600 px-5 py-2 font-semibold"
+        className="rounded-lg bg-red-600 px-5 py-2 font-semibold disabled:opacity-60"
         disabled={update.isPending}
         type="submit"
       >
-        Save changes
+        {update.isPending ? 'Saving…' : 'Save changes'}
       </button>
     </form>
   );

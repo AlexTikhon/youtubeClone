@@ -1,6 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { StudioVideos } from './studio-videos';
 import { apiRequest } from '@/shared/api/api-client';
@@ -36,6 +42,7 @@ const failedVideo = {
 
 describe('StudioVideos processing recovery', () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => cleanup());
 
   it('shows failed processing, disables retry while pending, and invalidates Studio', async () => {
     let resolveRetry!: () => void;
@@ -82,5 +89,25 @@ describe('StudioVideos processing recovery', () => {
         queryKey: ['studio', 'videos'],
       }),
     );
+  });
+
+  it('presents processing as an intentional non-actionable state', async () => {
+    vi.mocked(apiRequest).mockResolvedValue({
+      data: [{ ...failedVideo, status: 'PROCESSING', failureReason: null }],
+      page: { nextCursor: null, hasMore: false },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <StudioVideos />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/PROCESSING · PRIVATE/)).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: 'Retry processing' }),
+    ).not.toBeInTheDocument();
   });
 });

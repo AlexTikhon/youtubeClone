@@ -1,6 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiRequest } from '@/shared/api/api-client';
 import { SaveToPlaylistButton } from './save-to-playlist-button';
 
@@ -9,6 +15,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 describe('SaveToPlaylistButton', () => {
   beforeEach(() => vi.mocked(apiRequest).mockReset());
+  afterEach(() => cleanup());
 
   it('loads Watch Later and saves with the idempotent playlist endpoint', async () => {
     vi.mocked(apiRequest).mockImplementation(async (path) => {
@@ -48,5 +55,27 @@ describe('SaveToPlaylistButton', () => {
         { method: 'PUT' },
       ),
     );
+  });
+
+  it('moves focus into the dialog, closes on Escape, and restores focus', () => {
+    vi.mocked(apiRequest).mockResolvedValue({
+      data: [],
+      page: { hasMore: false, nextCursor: null },
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <SaveToPlaylistButton videoId="video-id" />
+      </QueryClientProvider>,
+    );
+    const saveButton = screen.getByRole('button', { name: 'Save' });
+    saveButton.focus();
+    fireEvent.click(saveButton);
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(saveButton).toHaveFocus();
   });
 });

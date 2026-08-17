@@ -200,3 +200,61 @@ explicit disaster recovery. The bounded in-memory home ranker would likely becom
 recommendation system with persisted candidate snapshots.
 
 None of those additions improves the learning ROI of this single-developer application today.
+
+## Frontend architecture
+
+### Why Next.js when much of the application is interactive?
+
+App Router provides route/layout composition, metadata, streaming loading boundaries, error
+boundaries, and a Server Component default. Repository pages stay on the server and compose narrow
+client islands such as `SearchForm`, `VideoFeed`, `WatchVideo`, and `StudioVideos`. The header itself
+is static server composition; only search and authentication status hydrate. This keeps routing and
+document concerns separate from the interaction-heavy server-state layer.
+
+### Why TanStack Query?
+
+Feeds, session, comments, playlists, and Studio rows are server state, not global UI state. TanStack
+Query provides cache identity, request de-duplication, infinite pagination, mutation lifecycles,
+polling, and targeted invalidation. Modal visibility and form values remain local React state. Query
+keys are centralized by domain, so retry processing refreshes Studio, while video metadata changes
+refresh only affected detail and discovery caches rather than clearing the application.
+
+### How are Server and Client Components chosen?
+
+Routes, `AppHeader`, `VideoCard`, and static shared UI do not declare `use client`. Components that
+own React Query, forms, effects, browser media APIs, or event handlers do. `WatchPage` is server
+composition around the `WatchVideo` client island; `HlsVideoPlayer` is a still smaller browser-only
+island. The project does not force query hydration: forwarding session cookies and maintaining a
+second fetch/cache path would add more complexity than it saves at this scale.
+
+### How is HLS loading optimized?
+
+The player checks native HLS first, then calls `import('hls.js')` during its effect. HLS code is a
+separate playback-only chunk, so feed, search, playlist, and channel visitors do not download it.
+Credentialed XHR is retained. Fatal network recovery is capped at two attempts and media recovery at
+one; exhaustion, unsupported playback, initialization failure, and native media errors all lead to
+a visible Retry playback action and deterministic cleanup.
+
+### How are request waterfalls prevented?
+
+Current-user and watch-detail queries start in the same render. Playlist context and related videos
+also start while watch metadata is loading. Channel profile and channel video queries render as
+independent regions instead of waiting for one another. Dependent requests remain sequential only
+when they genuinely require a previous result, such as creating a playlist before adding a video.
+
+### How does the frontend handle failures?
+
+App Router `error.tsx` handles unexpected render failures; query regions retain their surrounding
+page and offer local retry. The API layer maps network, 401, 403, 404, 409, 429, and 5xx outcomes to
+safe semantic messages. Mutation errors appear beside the action, optimistic like/subscribe changes
+roll back and announce failure, and the player has its own bounded recovery state rather than
+collapsing into a black rectangle.
+
+### What accessibility work is concrete here?
+
+The root layout has one main landmark and a focus-visible skip link. Forms use real labels and relate
+errors with `aria-describedby`/`aria-invalid`; async failures use alerts and selected successes use
+live status. The shared dialog implementation moves focus inside, traps Tab, closes on Escape, and
+restores focus. Video cards expose unambiguous video and channel links, native controls remain on the
+player, reduced-motion preferences disable optional scaling, and Playwright covers a keyboard-only
+skip/search/open-video journey.

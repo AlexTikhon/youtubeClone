@@ -6,13 +6,16 @@ import {
 } from '@tanstack/react-query';
 import Link from 'next/link';
 import type { CursorPage, HistoryItemDto } from '@youtube-clone/types';
-import { apiRequest, resolveApiUrl } from '@/shared/api/api-client';
+import { apiRequest } from '@/shared/api/api-client';
 import { formatDuration, formatRelativeDate } from '@/shared/format/format';
+import { queryKeys } from '@/shared/query/query-keys';
+import { MediaThumbnail } from '@/shared/ui/media-thumbnail';
+import { EmptyState, InlineError, PageSkeleton } from '@/shared/ui/async-state';
 
 export function HistoryList() {
   const queryClient = useQueryClient();
   const history = useInfiniteQuery({
-    queryKey: ['history'],
+    queryKey: queryKeys.history.all,
     initialPageParam: '',
     queryFn: ({ pageParam }) =>
       apiRequest<CursorPage<HistoryItemDto>>(
@@ -24,21 +27,25 @@ export function HistoryList() {
   const remove = useMutation({
     mutationFn: (videoId: string) =>
       apiRequest(`/api/v1/history/${videoId}`, { method: 'DELETE' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['history'] }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.history.all }),
   });
   const items = history.data?.pages.flatMap((page) => page.data) ?? [];
-  if (history.isPending)
-    return <p className="text-zinc-400">Loading history…</p>;
+  if (history.isPending) return <PageSkeleton variant="list" />;
   if (history.isError)
-    return <p className="text-red-400">Log in to view your watch history.</p>;
-  if (!items.length)
     return (
-      <div className="rounded-2xl border border-dashed border-zinc-700 p-12 text-center text-zinc-400">
-        You haven&apos;t watched anything yet.
-      </div>
+      <InlineError
+        message="Log in to view your watch history."
+        onRetry={() => void history.refetch()}
+      />
     );
+  if (!items.length)
+    return <EmptyState title="You haven't watched anything yet." />;
   return (
     <div className="space-y-6">
+      {remove.isError && (
+        <InlineError message="The history item could not be removed." />
+      )}
       {items.map((item) => (
         <article
           className="grid gap-4 sm:grid-cols-[18rem_1fr_auto]"
@@ -48,13 +55,7 @@ export function HistoryList() {
             className="relative aspect-video overflow-hidden rounded-xl bg-zinc-800"
             href={`/watch/${item.video.id}`}
           >
-            {item.video.thumbnailUrl && (
-              <img
-                alt={`Thumbnail for ${item.video.title}`}
-                className="h-full w-full object-cover"
-                src={resolveApiUrl(item.video.thumbnailUrl)}
-              />
-            )}
+            <MediaThumbnail src={item.video.thumbnailUrl} />
             <div className="absolute inset-x-0 bottom-0 h-1 bg-zinc-700">
               <div
                 className="h-full bg-red-600"
@@ -93,10 +94,11 @@ export function HistoryList() {
       {history.hasNextPage && (
         <button
           className="rounded-lg border border-zinc-700 px-4 py-2"
+          disabled={history.isFetchingNextPage}
           onClick={() => void history.fetchNextPage()}
           type="button"
         >
-          Load more
+          {history.isFetchingNextPage ? 'Loading…' : 'Load more'}
         </button>
       )}
     </div>

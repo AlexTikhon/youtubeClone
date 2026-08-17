@@ -4,6 +4,12 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import type { CursorPage, VideoCardDto } from '@youtube-clone/types';
 import { apiRequest } from '@/shared/api/api-client';
 import { VideoGrid } from '@/widgets/video-grid/video-grid';
+import { getApiErrorPresentation } from '@/shared/api/api-error';
+import {
+  EmptyState,
+  InlineError,
+  VideoGridSkeleton,
+} from '@/shared/ui/async-state';
 
 export function VideoFeed({
   endpoint,
@@ -16,6 +22,7 @@ export function VideoFeed({
 }) {
   const query = useInfiniteQuery({
     queryKey,
+    throwOnError: false,
     initialPageParam: '',
     queryFn: ({ pageParam }) =>
       apiRequest<CursorPage<VideoCardDto>>(
@@ -24,15 +31,17 @@ export function VideoFeed({
     getNextPageParam: (page) => page.page.nextCursor ?? undefined,
   });
   const videos = query.data?.pages.flatMap((page) => page.data) ?? [];
-  if (query.isPending) return <p className="text-zinc-400">Loading videos…</p>;
+  if (query.isPending) return <VideoGridSkeleton />;
   if (query.isError)
-    return <p className="text-red-400">Could not load videos.</p>;
-  if (!videos.length)
     return (
-      <div className="rounded-2xl border border-dashed border-zinc-700 p-12 text-center text-zinc-400">
-        {emptyMessage}
-      </div>
+      <InlineError
+        message={
+          getApiErrorPresentation(query.error, 'Could not load videos.').message
+        }
+        onRetry={() => void query.refetch()}
+      />
     );
+  if (!videos.length) return <EmptyState title={emptyMessage} />;
   return (
     <div className="space-y-10">
       <VideoGrid videos={videos} />

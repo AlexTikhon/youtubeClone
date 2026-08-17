@@ -5,6 +5,7 @@ import type { LikeStateDto, WatchVideoDto } from '@youtube-clone/types';
 import { apiRequest } from '@/shared/api/api-client';
 import { ApiClientError } from '@/shared/api/api-error';
 import { formatCount } from '@/shared/format/format';
+import { queryKeys } from '@/shared/query/query-keys';
 
 export function optimisticLikeState(video: WatchVideoDto): WatchVideoDto {
   return {
@@ -20,7 +21,7 @@ export function optimisticLikeState(video: WatchVideoDto): WatchVideoDto {
 export function LikeButton({ video }: { video: WatchVideoDto }) {
   const queryClient = useQueryClient();
   const router = useRouter();
-  const key = ['video', video.id] as const;
+  const key = queryKeys.video.detail(video.id);
   const mutation = useMutation({
     mutationFn: (liked: boolean) =>
       apiRequest<LikeStateDto>(`/api/v1/videos/${video.id}/like`, {
@@ -53,18 +54,29 @@ export function LikeButton({ video }: { video: WatchVideoDto }) {
       ),
   });
   return (
-    <button
-      aria-pressed={video.likedByCurrentUser}
-      className={
-        video.likedByCurrentUser
-          ? 'rounded-full bg-red-600 px-5 py-2 font-semibold'
-          : 'rounded-full bg-zinc-800 px-5 py-2 font-semibold'
-      }
-      disabled={mutation.isPending}
-      onClick={() => mutation.mutate(video.likedByCurrentUser)}
-      type="button"
-    >
-      Like {formatCount(video.likesCount)}
-    </button>
+    <>
+      <button
+        aria-pressed={video.likedByCurrentUser}
+        className={
+          video.likedByCurrentUser
+            ? 'rounded-full bg-red-600 px-5 py-2 font-semibold'
+            : 'rounded-full bg-zinc-800 px-5 py-2 font-semibold'
+        }
+        disabled={mutation.isPending}
+        onClick={() => mutation.mutate(video.likedByCurrentUser)}
+        type="button"
+      >
+        Like {formatCount(video.likesCount)}
+      </button>
+      {mutation.isError &&
+        !(
+          mutation.error instanceof ApiClientError &&
+          mutation.error.status === 401
+        ) && (
+          <span className="text-xs text-red-400" role="alert">
+            Like failed. Your previous choice was restored.
+          </span>
+        )}
+    </>
   );
 }

@@ -23,6 +23,31 @@ test('keeps primary navigation available at a mobile viewport', async ({
   await expect(navigation.getByRole('link', { name: 'History' })).toBeVisible();
 });
 
+test('supports skip navigation and keyboard search-to-watch navigation', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.keyboard.press('Tab');
+  const skipLink = page.getByRole('link', { name: 'Skip to main content' });
+  await expect(skipLink).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#main-content')).toBeFocused();
+
+  const search = page.getByLabel('Search videos');
+  await search.focus();
+  await search.fill('React Architecture');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/search\?q=React%20Architecture/);
+  const result = page
+    .getByRole('link', { name: /React Architecture in Practice/ })
+    .first();
+  await result.focus();
+  await page.keyboard.press('Enter');
+  await expect(
+    page.getByRole('heading', { name: 'React Architecture in Practice' }),
+  ).toBeVisible();
+});
+
 test('login, search, like, and save a seeded video to Watch Later', async ({
   page,
 }) => {
@@ -35,18 +60,18 @@ test('login, search, like, and save a seeded video to Watch Later', async ({
   await expect(page).toHaveURL(/\/$/);
 
   await page.getByLabel('Search videos').fill('React Architecture');
-  await page.getByLabel('Submit search').click();
+  await page.getByLabel('Search videos').press('Enter');
   await expect(page).toHaveURL(/\/search\?q=React%20Architecture/);
   await page
     .getByRole('link', { name: /React Architecture in Practice/ })
     .first()
-    .click();
+    .press('Enter');
   await expect(
     page.getByRole('heading', { name: 'React Architecture in Practice' }),
   ).toBeVisible();
 
-  await page.getByRole('button', { name: /^Like/ }).click();
-  await page.getByRole('button', { name: 'Save' }).click();
+  await page.getByRole('button', { name: /^Like/ }).press('Enter');
+  await page.getByRole('button', { name: 'Save' }).press('Enter');
   const watchLater = page.getByLabel('Watch Later');
   if (!(await watchLater.isChecked())) await watchLater.click();
   await expect(watchLater).toBeChecked();

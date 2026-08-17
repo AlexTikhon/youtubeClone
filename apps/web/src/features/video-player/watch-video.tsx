@@ -15,6 +15,8 @@ import { PlaylistPanel } from '@/widgets/playlist-panel/playlist-panel';
 import { SaveToPlaylistButton } from '@/features/playlist-save/save-to-playlist-button';
 import { queryKeys } from '@/shared/query/query-keys';
 import { HlsVideoPlayer } from './hls-video-player';
+import { getApiErrorPresentation } from '@/shared/api/api-error';
+import { InlineError, PageSkeleton } from '@/shared/ui/async-state';
 
 export function WatchVideo({
   videoId,
@@ -27,7 +29,7 @@ export function WatchVideo({
   useEffect(() => setVideoEnded(false), [videoId]);
   const user = useCurrentUser();
   const video = useQuery({
-    queryKey: queryKeys.video(videoId),
+    queryKey: queryKeys.video.detail(videoId),
     queryFn: () => apiRequest<WatchVideoDto>(`/api/v1/videos/${videoId}`),
     retry: false,
   });
@@ -36,9 +38,32 @@ export function WatchVideo({
     video.data?.durationSeconds ?? 0,
     Boolean(user.data),
   );
-  if (video.isPending) return <p className="text-zinc-400">Loading video…</p>;
+  if (video.isPending)
+    return (
+      <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <PageSkeleton variant="watch" />
+        <aside className="space-y-8">
+          {playlistId && (
+            <PlaylistPanel
+              playlistId={playlistId}
+              videoEnded={false}
+              videoId={videoId}
+            />
+          )}
+          <RelatedVideos videoId={videoId} />
+        </aside>
+      </div>
+    );
   if (video.isError)
-    return <p className="text-red-400">This video is unavailable.</p>;
+    return (
+      <InlineError
+        message={
+          getApiErrorPresentation(video.error, 'This video is unavailable.')
+            .message
+        }
+        onRetry={() => void video.refetch()}
+      />
+    );
   return (
     <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <article className="min-w-0">
@@ -73,10 +98,10 @@ export function WatchVideo({
           {user.data?.channel.id !== video.data.channel.id && (
             <SubscribeButton
               channel={video.data.channel}
-              queryKey={['video', videoId]}
+              queryKey={queryKeys.video.detail(videoId)}
             />
           )}
-          <div className="ml-auto flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 sm:ml-auto">
             <span className="text-sm text-zinc-400">
               {formatCount(video.data.viewsCount)} views
             </span>

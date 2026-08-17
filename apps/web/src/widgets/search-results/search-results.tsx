@@ -5,10 +5,12 @@ import type { CursorPage, VideoCardDto } from '@youtube-clone/types';
 import { VideoCard } from '@/entities/video/video-card';
 import { apiRequest } from '@/shared/api/api-client';
 import { queryKeys } from '@/shared/query/query-keys';
+import { EmptyState, InlineError, PageSkeleton } from '@/shared/ui/async-state';
+import { getApiErrorPresentation } from '@/shared/api/api-error';
 
 export function SearchResults({ query }: { query: string }) {
   const search = useInfiniteQuery({
-    queryKey: queryKeys.search(query),
+    queryKey: queryKeys.search.results(query),
     initialPageParam: '',
     enabled: query.length > 0,
     queryFn: ({ pageParam }) =>
@@ -19,18 +21,21 @@ export function SearchResults({ query }: { query: string }) {
     retry: false,
   });
   if (!query)
-    return (
-      <EmptyMessage>Enter a search term to find public videos.</EmptyMessage>
-    );
-  if (search.isPending)
-    return <p className="text-zinc-400">Searching videos...</p>;
+    return <EmptyState title="Enter a search term to find public videos." />;
+  if (search.isPending) return <PageSkeleton variant="list" />;
   if (search.isError)
     return (
-      <p className="text-red-400">Search is unavailable. Please try again.</p>
+      <InlineError
+        message={
+          getApiErrorPresentation(search.error, 'Search is unavailable.')
+            .message
+        }
+        onRetry={() => void search.refetch()}
+      />
     );
   const results = search.data.pages.flatMap((page) => page.data);
   if (!results.length)
-    return <EmptyMessage>No videos matched this search.</EmptyMessage>;
+    return <EmptyState title="No videos matched this search." />;
   return (
     <div className="space-y-6">
       {results.map((video) => (
@@ -48,14 +53,6 @@ export function SearchResults({ query }: { query: string }) {
           {search.isFetchingNextPage ? 'Loading...' : 'Load more'}
         </button>
       )}
-    </div>
-  );
-}
-
-function EmptyMessage({ children }: { children: string }) {
-  return (
-    <div className="rounded-2xl border border-dashed border-zinc-700 p-12 text-center text-zinc-400">
-      {children}
     </div>
   );
 }

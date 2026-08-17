@@ -26,13 +26,26 @@ export async function apiRequest<T>(
     headers.set('x-request-id', crypto.randomUUID());
   }
 
-  const response = await fetch(resolveApiUrl(path), {
-    ...options,
-    headers,
-    credentials: 'include',
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
-  if (response.ok) return (await response.json()) as T;
+  let response: Response;
+  try {
+    response = await fetch(resolveApiUrl(path), {
+      ...options,
+      headers,
+      credentials: 'include',
+      body:
+        options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+  } catch {
+    throw new ApiClientError(
+      'The API could not be reached',
+      0,
+      'NETWORK_ERROR',
+    );
+  }
+  if (response.ok) {
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  }
 
   const payload: unknown = await response.json().catch(() => null);
   if (isApiErrorEnvelope(payload)) {
