@@ -15,6 +15,7 @@ import { AppError } from '../infrastructure/http/app-error.js';
 import type { RequestWithContext } from '../infrastructure/http/request-context.js';
 import {
   OBJECT_STORAGE,
+  ObjectNotFoundError,
   type ObjectStorage,
 } from '../infrastructure/storage/storage.port.js';
 import { VideosService } from './videos.service.js';
@@ -38,7 +39,6 @@ export class MediaController {
       request.user?.id,
       'THUMBNAIL',
       undefined,
-      'immutable',
       request,
       response,
     );
@@ -63,7 +63,6 @@ export class MediaController {
       request.user?.id,
       'HLS_MANIFEST',
       `${rendition}/${fileName}`,
-      'immutable',
       request,
       response,
     );
@@ -80,7 +79,6 @@ export class MediaController {
       request.user?.id,
       'HLS_MANIFEST',
       undefined,
-      'immutable',
       request,
       response,
     );
@@ -91,7 +89,6 @@ export class MediaController {
     ownerId: string | undefined,
     kind: 'THUMBNAIL' | 'HLS_MANIFEST',
     relativeKey: string | undefined,
-    publicCache: 'immutable' | 'manifest',
     request: RequestWithContext,
     response: Response,
   ): Promise<void> {
@@ -105,9 +102,7 @@ export class MediaController {
       response.setHeader(
         'cache-control',
         asset.visibility === 'PUBLIC'
-          ? publicCache === 'immutable'
-            ? 'public, max-age=31536000, immutable'
-            : 'public, max-age=300'
+          ? 'public, max-age=0, must-revalidate'
           : 'private, no-store',
       );
       if (object.sizeBytes !== null)
@@ -115,8 +110,15 @@ export class MediaController {
       request.once('aborted', () => object.body.destroy());
       object.body.once('error', () => response.destroy());
       object.body.pipe(response);
-    } catch {
-      throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);
+    } catch (error) {
+      if (error instanceof ObjectNotFoundError) {
+        throw new AppError('MEDIA_NOT_FOUND', 'Media was not found', 404);
+      }
+      throw new AppError(
+        'MEDIA_STORAGE_UNAVAILABLE',
+        'Media storage is temporarily unavailable',
+        503,
+      );
     }
   }
 }

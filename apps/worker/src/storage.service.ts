@@ -12,7 +12,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { OnApplicationShutdown } from '@nestjs/common';
 
 import { workerEnvironment } from './config.js';
@@ -20,6 +20,7 @@ import { ProcessingError } from './processing-error.js';
 
 @Injectable()
 export class StorageService implements OnApplicationShutdown {
+  private readonly logger = new Logger(StorageService.name);
   private readonly client = new S3Client({
     endpoint: workerEnvironment.S3_ENDPOINT,
     region: workerEnvironment.S3_REGION,
@@ -256,12 +257,30 @@ export class StorageService implements OnApplicationShutdown {
           object.Key ? [{ Key: object.Key }] : [],
         ) ?? [];
       if (objects.length > 0) {
-        await this.client.send(
+        const result = await this.client.send(
           new DeleteObjectsCommand({
             Bucket: bucket,
             Delete: { Objects: objects, Quiet: true },
           }),
         );
+        if (result.Errors?.length) {
+          this.logger.error({
+            event: 'storage.delete_prefix.partial_failure',
+            failureCount: result.Errors.length,
+            errorCodes: [
+              ...new Set(
+                result.Errors.flatMap((error) =>
+                  error.Code ? [error.Code] : [],
+                ),
+              ),
+            ],
+          });
+          throw new ProcessingError(
+            'Storage did not delete every generated object',
+            true,
+            'Generated media cleanup is temporarily incomplete',
+          );
+        }
       }
       continuationToken = page.NextContinuationToken;
     } while (continuationToken);

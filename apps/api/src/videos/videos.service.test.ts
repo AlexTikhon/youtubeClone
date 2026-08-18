@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import {
+  ObjectNotFoundError,
+  ObjectStorageUnavailableError,
+} from '../infrastructure/storage/storage.port.js';
 import { VideosService } from './videos.service.js';
 
 const privateVideo = {
@@ -36,6 +40,43 @@ const privateVideo = {
 };
 
 describe('VideosService authorization and publishing', () => {
+  it.each([
+    ['PUBLIC', undefined, true],
+    ['UNLISTED', undefined, true],
+    ['PRIVATE', 'owner-id', true],
+    ['PRIVATE', undefined, false],
+  ] as const)(
+    'enforces %s media access for caller %s',
+    async (visibility, userId, allowed) => {
+      const prisma = {
+        video: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: privateVideo.id,
+            status: 'READY',
+            visibility,
+            durationSeconds: 30,
+            channel: { ownerId: 'owner-id' },
+          }),
+        },
+      };
+      const service = new VideosService(
+        prisma as never,
+        {} as never,
+        {} as never,
+      );
+      const result = service.assertMediaAccess(privateVideo.id, userId);
+
+      if (allowed) {
+        await expect(result).resolves.toMatchObject({ visibility });
+      } else {
+        await expect(result).rejects.toMatchObject({
+          code: 'VIDEO_NOT_FOUND',
+          status: 404,
+        });
+      }
+    },
+  );
+
   it('returns an owned private ready video without exposing failure data', async () => {
     const prisma = {
       video: { findUnique: vi.fn().mockResolvedValue(privateVideo) },
@@ -276,13 +317,23 @@ describe('VideosService processing retry', () => {
 
   it('rejects a missing original storage object', async () => {
     const { service, storage } = createRetryService();
-    storage.headObject.mockRejectedValueOnce(new Error('not found'));
+    storage.headObject.mockRejectedValueOnce(new ObjectNotFoundError());
     await expect(
       service.retryProcessing(failedVideo.id, 'owner-id', 'request-id'),
     ).rejects.toMatchObject({
       code: 'VIDEO_ORIGINAL_OBJECT_MISSING',
       status: 409,
     });
+  });
+
+  it('reports storage downtime as retryable infrastructure failure', async () => {
+    const { service, storage } = createRetryService();
+    storage.headObject.mockRejectedValueOnce(
+      new ObjectStorageUnavailableError(),
+    );
+    await expect(
+      service.retryProcessing(failedVideo.id, 'owner-id', 'request-id'),
+    ).rejects.toMatchObject({ code: 'STORAGE_UNAVAILABLE', status: 503 });
   });
 
   it('allows exactly one of two concurrent retry claims', async () => {
@@ -301,5 +352,40 @@ describe('VideosService processing retry', () => {
       results.filter((result) => result.status === 'rejected'),
     ).toHaveLength(1);
     expect(transaction.processingOutbox.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('VideosService deletion barrier', () => {
+  it('does not delete the database row after partial storage cleanup fails', async () => {
+    const prisma = {
+      video: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: privateVideo.id,
+          status: 'DELETING',
+          assets: [],
+          upload: null,
+        }),
+        delete: vi.fn(),
+      },
+    };
+    const storage = {
+      deleteObject: vi.fn(),
+      deletePrefix: vi
+        .fn()
+        .mockRejectedValue(new ObjectStorageUnavailableError()),
+    };
+    const service = new VideosService(
+      prisma as never,
+      storage as never,
+      {
+        S3_BUCKET_STREAMS: 'streams',
+        S3_BUCKET_THUMBNAILS: 'thumbnails',
+      } as never,
+    );
+
+    await expect(
+      service.delete(privateVideo.id, 'owner-id'),
+    ).rejects.toMatchObject({ code: 'VIDEO_DELETE_FAILED', status: 503 });
+    expect(prisma.video.delete).not.toHaveBeenCalled();
   });
 });

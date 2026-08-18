@@ -3,9 +3,15 @@ import { PassThrough, Readable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import {
+  ObjectNotFoundError,
+  ObjectStorageUnavailableError,
+} from '../infrastructure/storage/storage.port.js';
 import { MediaController } from './media.controller.js';
 
-function createHttpDoubles(visibility: 'PUBLIC' | 'PRIVATE' = 'PUBLIC') {
+function createHttpDoubles(
+  visibility: 'PUBLIC' | 'UNLISTED' | 'PRIVATE' = 'PUBLIC',
+) {
   const videos = {
     resolveMediaAsset: vi.fn().mockResolvedValue({
       visibility,
@@ -45,7 +51,11 @@ describe('MediaController ABR routes', () => {
     );
     expect(response.setHeader).toHaveBeenCalledWith(
       'cache-control',
-      'public, max-age=31536000, immutable',
+      'public, max-age=0, must-revalidate',
+    );
+    expect(response.setHeader).not.toHaveBeenCalledWith(
+      'cache-control',
+      expect.stringContaining('immutable'),
     );
   });
 
@@ -97,5 +107,49 @@ describe('MediaController ABR routes', () => {
       'cache-control',
       'private, no-store',
     );
+  });
+
+  it('never publicly caches unlisted manifests', async () => {
+    const { controller, request, response } = createHttpDoubles('UNLISTED');
+    await controller.masterManifest(
+      '11111111-1111-4111-8111-111111111111',
+      request as never,
+      response as never,
+    );
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'cache-control',
+      'private, no-store',
+    );
+  });
+
+  it('maps a genuinely missing object to a safe 404', async () => {
+    const { controller, request, response, storage } = createHttpDoubles();
+    storage.getObject.mockRejectedValueOnce(new ObjectNotFoundError());
+
+    await expect(
+      controller.masterManifest(
+        '11111111-1111-4111-8111-111111111111',
+        request as never,
+        response as never,
+      ),
+    ).rejects.toMatchObject({ code: 'MEDIA_NOT_FOUND', status: 404 });
+  });
+
+  it('maps a storage outage to a safe retryable 503', async () => {
+    const { controller, request, response, storage } = createHttpDoubles();
+    storage.getObject.mockRejectedValueOnce(
+      new ObjectStorageUnavailableError(),
+    );
+
+    await expect(
+      controller.masterManifest(
+        '11111111-1111-4111-8111-111111111111',
+        request as never,
+        response as never,
+      ),
+    ).rejects.toMatchObject({
+      code: 'MEDIA_STORAGE_UNAVAILABLE',
+      status: 503,
+    });
   });
 });

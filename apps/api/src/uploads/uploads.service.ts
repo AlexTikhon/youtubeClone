@@ -9,6 +9,7 @@ import { PrismaService } from '../infrastructure/database/prisma.service.js';
 import { AppError } from '../infrastructure/http/app-error.js';
 import {
   OBJECT_STORAGE,
+  ObjectNotFoundError,
   type ObjectStorage,
 } from '../infrastructure/storage/storage.port.js';
 import { assertVideoTransition } from '../videos/domain/video-state-machine.js';
@@ -132,11 +133,18 @@ export class UploadsService {
     let metadata;
     try {
       metadata = await this.storage.headObject(upload.bucket, upload.objectKey);
-    } catch {
+    } catch (error) {
+      if (error instanceof ObjectNotFoundError) {
+        throw new AppError(
+          'UPLOADED_OBJECT_NOT_FOUND',
+          'The uploaded object is not available',
+          409,
+        );
+      }
       throw new AppError(
-        'UPLOADED_OBJECT_NOT_FOUND',
-        'The uploaded object is not available',
-        409,
+        'STORAGE_UNAVAILABLE',
+        'Object storage is temporarily unavailable',
+        503,
       );
     }
     if (metadata.sizeBytes === null || metadata.sizeBytes === 0n)

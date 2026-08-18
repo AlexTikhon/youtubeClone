@@ -18,6 +18,7 @@ import { AppError } from '../infrastructure/http/app-error.js';
 import { decodeCursor, encodeCursor } from '../infrastructure/http/cursor.js';
 import {
   OBJECT_STORAGE,
+  ObjectNotFoundError,
   type ObjectStorage,
 } from '../infrastructure/storage/storage.port.js';
 import { assertVideoTransition } from './domain/video-state-machine.js';
@@ -157,11 +158,18 @@ export class VideosService {
         original.bucket,
         original.objectKey,
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof ObjectNotFoundError) {
+        throw new AppError(
+          'VIDEO_ORIGINAL_OBJECT_MISSING',
+          'The original video object is no longer available',
+          409,
+        );
+      }
       throw new AppError(
-        'VIDEO_ORIGINAL_OBJECT_MISSING',
-        'The original video object is no longer available',
-        409,
+        'STORAGE_UNAVAILABLE',
+        'Object storage is temporarily unavailable',
+        503,
       );
     }
     if (

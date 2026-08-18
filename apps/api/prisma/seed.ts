@@ -1,10 +1,11 @@
 import { PrismaClient } from '@prisma/client';
 import { hashPassword } from '../src/auth/password.js';
+import { resolveDevelopmentSeedPassword } from '../src/config/development-seed.js';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  const password = process.env.DEV_SEED_PASSWORD ?? 'youtube-clone-dev';
+  const password = resolveDevelopmentSeedPassword(process.env);
   const passwordHash = await hashPassword(password);
   const user = await prisma.user.upsert({
     where: { email: 'developer@example.test' },

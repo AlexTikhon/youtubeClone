@@ -74,12 +74,14 @@ the CSS breakpoints are designed for 360, 768, 1024, and 1440 px review.
 ## Images and media authorization
 
 Thumbnails deliberately use native `img`, with intrinsic dimensions, an aspect-ratio container,
-lazy loading, async decoding, and a stable fallback. The media API authorizes PRIVATE and UNLISTED
-requests with the browser session and returns `private, no-store` for non-public assets. The Next
+lazy loading, async decoding, and a stable fallback. The media API authorizes every request, requires
+the owner session for PRIVATE media, and returns `private, no-store` for all non-public assets. The Next
 Image optimizer fetches remotely on the server and would not automatically forward that browser
 session, so routing protected thumbnails through it could break authorization or tempt a security
-exception. Native image requests preserve the existing guard and cache policy. PUBLIC media still
-receives the API's immutable cache headers.
+exception. Native image requests preserve the existing guard and cache policy. Because visibility can
+change without changing a guarded media URL, PUBLIC responses use
+`public, max-age=0, must-revalidate`; immutable bytes do not imply immutable authorization. CDN-scale
+delivery would use versioned/signed paths plus explicit invalidation or authorization tokens.
 
 The watch player uses native HLS when available and dynamically imports `hls.js` only inside the
 player lifecycle otherwise. Feed/search/channel users therefore do not download the HLS

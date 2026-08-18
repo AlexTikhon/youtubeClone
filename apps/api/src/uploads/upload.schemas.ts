@@ -5,9 +5,10 @@ export const startUploadSchema = z.object({
   contentType: z.literal('video/mp4'),
   sizeBytes: z.coerce
     .number()
+    .finite()
     .int()
     .positive()
-    .max(2 * 1024 * 1024 * 1024),
+    .max(Number.MAX_SAFE_INTEGER),
 });
 
 export type StartUploadInput = z.infer<typeof startUploadSchema>;

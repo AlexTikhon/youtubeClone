@@ -9,12 +9,24 @@ import type { AuthenticatedUserResponse } from '@youtube-clone/types';
 import { apiRequest } from '@/shared/api/api-client';
 import { getApiErrorPresentation } from '@/shared/api/api-error';
 import { queryKeys } from '@/shared/query/query-keys';
+import { safeInternalRedirect } from './safe-internal-redirect';
+
+export function loginDefaultsForEnvironment(environment: string | undefined) {
+  const showDevelopmentCredentials =
+    environment === 'development' || environment === 'test';
+  return {
+    email: showDevelopmentCredentials ? 'developer@example.test' : '',
+    password: showDevelopmentCredentials ? 'youtube-clone-dev' : '',
+    showDevelopmentCredentials,
+  };
+}
 
 export function LoginForm({ next }: { next?: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const [email, setEmail] = useState('developer@example.test');
-  const [password, setPassword] = useState('youtube-clone-dev');
+  const defaults = loginDefaultsForEnvironment(process.env.NODE_ENV);
+  const [email, setEmail] = useState(defaults.email);
+  const [password, setPassword] = useState(defaults.password);
   const login = useMutation({
     mutationFn: () =>
       apiRequest<AuthenticatedUserResponse>('/api/v1/auth/login', {
@@ -24,7 +36,7 @@ export function LoginForm({ next }: { next?: string }) {
     onSuccess: (user) => {
       queryClient.clear();
       queryClient.setQueryData(queryKeys.auth.currentUser, user);
-      router.push(next?.startsWith('/') && !next.startsWith('//') ? next : '/');
+      router.push(safeInternalRedirect(next));
     },
   });
   const submit = (event: FormEvent) => {
@@ -38,14 +50,20 @@ export function LoginForm({ next }: { next?: string }) {
     >
       <div>
         <h1 className="text-2xl font-bold">Log in</h1>
-        <p className="mt-2 text-sm text-zinc-400" id="login-help">
-          Use the seeded local development account.
-        </p>
+        {defaults.showDevelopmentCredentials && (
+          <p className="mt-2 text-sm text-zinc-400" id="login-help">
+            Use the seeded local development account.
+          </p>
+        )}
       </div>
       <label className="block text-sm text-zinc-300" htmlFor="login-email">
         Email
         <input
-          aria-describedby="login-help login-error"
+          aria-describedby={
+            defaults.showDevelopmentCredentials
+              ? 'login-help login-error'
+              : 'login-error'
+          }
           aria-invalid={login.isError}
           autoComplete="email"
           className="field mt-2"
@@ -58,7 +76,11 @@ export function LoginForm({ next }: { next?: string }) {
       <label className="block text-sm text-zinc-300" htmlFor="login-password">
         Password
         <input
-          aria-describedby="login-help login-error"
+          aria-describedby={
+            defaults.showDevelopmentCredentials
+              ? 'login-help login-error'
+              : 'login-error'
+          }
           aria-invalid={login.isError}
           autoComplete="current-password"
           className="field mt-2"

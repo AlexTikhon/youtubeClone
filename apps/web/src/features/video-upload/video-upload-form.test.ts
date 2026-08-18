@@ -18,4 +18,12 @@ describe('video upload validation', () => {
       ),
     ).toContain('MP4');
   });
+
+  it('leaves the configurable deployment size limit to the API', () => {
+    const file = new File(['video'], 'large.mp4', { type: 'video/mp4' });
+    Object.defineProperty(file, 'size', {
+      value: 3 * 1024 * 1024 * 1024,
+    });
+    expect(validateVideoFile(file)).toBeNull();
+  });
 });

@@ -54,6 +54,9 @@ database.
 Open http://localhost:3000 and log in with `developer@example.test` / `youtube-clone-dev` (or your
 `DEV_SEED_PASSWORD`). The API is at http://localhost:4000/api/v1, OpenAPI at
 http://localhost:4000/api/docs, and the MinIO console at http://localhost:9001.
+The login form prefills and describes this account only in development/test builds. Production builds
+start with empty fields, and a production `prisma:seed` invocation fails unless `DEV_SEED_PASSWORD` is
+explicitly configured; the local fallback is never selected silently in production.
 
 If FFmpeg is not on the host, run the containerized worker and only web/API processes locally:
 
@@ -69,6 +72,7 @@ threads and parallel encoders can oversubscribe a developer laptop.
 The seed includes a clearly labeled private DRAFT in Studio so a fresh checkout has understandable
 metadata without pretending media exists. It creates no thumbnail or HLS bytes and does not put a
 broken video on discovery surfaces. Use the upload flow (or the media E2E) to demonstrate playback.
+`MAX_UPLOAD_SIZE_BYTES` is the authoritative deployment upload limit and defaults locally to 2 GiB.
 
 ## Verification
 

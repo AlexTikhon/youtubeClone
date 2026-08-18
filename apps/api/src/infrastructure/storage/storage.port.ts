@@ -1,3 +1,5 @@
+import type { Readable } from 'node:stream';
+
 export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');
 
 export interface CreateUploadUrlInput {
@@ -25,4 +27,17 @@ export interface ObjectStorage {
   deleteObject(bucket: string, objectKey: string): Promise<void>;
   deletePrefix(bucket: string, prefix: string): Promise<void>;
 }
-import type { Readable } from 'node:stream';
+
+export class ObjectNotFoundError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('The requested storage object was not found', options);
+    this.name = 'ObjectNotFoundError';
+  }
+}
+
+export class ObjectStorageUnavailableError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Object storage is unavailable', options);
+    this.name = 'ObjectStorageUnavailableError';
+  }
+}

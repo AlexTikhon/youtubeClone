@@ -20,8 +20,10 @@ inferior.
 
 Opaque server-side sessions provide revocation and keep credentials out of browser storage. Passwords
 use Node's scrypt with a random salt. The project intentionally provides one seeded local account rather
-than registration, OAuth, reset, or email workflows. Deployment must override the development seed
-password and production secrets.
+than registration, OAuth, reset, or email workflows. Development/test login builds may prefill and
+describe that account; production builds render empty credential fields without seeded-account help.
+Production seeding requires an explicit `DEV_SEED_PASSWORD`, while the weak documented fallback is
+limited to development/test. Deployment must also provide its normal production secrets.
 
 ## Direct upload, proxied playback
 
@@ -97,8 +99,9 @@ fingerprinting. Distributed rate limiting and rolling view windows are productio
 
 The local deployment performs storage cleanup synchronously behind `DELETING` instead of adding a
 second queue. Cleanup is idempotent and retryable. Worker checks before upload and at commit, with
-generated-prefix cleanup after a lost completion claim. A failed request can leave a pending-deletion
-row, which is safer than exposing a READY row whose media was partially removed.
+generated-prefix cleanup after a lost completion claim. `DeleteObjects` per-key errors count as a
+failed cleanup even when the S3 request itself succeeded. A failed request can leave a pending-deletion
+row, which is safer than deleting database authority while media remains.
 
 ## PostgreSQL search instead of a search service
 
@@ -128,5 +131,7 @@ No Redis DTO cache was added. The likely read models have broad invalidation req
 local workload does not demonstrate a latency need. Redis does enforce small distributed
 fixed-window limits on login, comments, qualified-view writes, and public search; media routes are
 excluded. Likes have a higher authenticated-user limit because the write is idempotent but still
-causes an aggregate count query. Public VOD segments, completed manifests, and thumbnails are
-immutable and receive long-lived HTTP cache headers. PRIVATE/UNLISTED bytes are never publicly cached.
+causes an aggregate count query. Generated VOD bytes are immutable, but their stable guarded URLs can
+change from PUBLIC to PRIVATE/UNLISTED. PUBLIC responses therefore use
+`public, max-age=0, must-revalidate`; PRIVATE/UNLISTED responses use `private, no-store`. CDN-scale
+delivery would instead need versioned or signed URLs and explicit invalidation or authorization tokens.

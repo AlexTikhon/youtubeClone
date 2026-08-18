@@ -85,3 +85,40 @@ describe('StorageService ABR upload', () => {
     }
   });
 });
+
+describe('StorageService generated cleanup', () => {
+  it('rejects a DeleteObjects response with per-key errors', async () => {
+    const service = new StorageService();
+    const client = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({ Contents: [{ Key: 'generated/key' }] })
+        .mockResolvedValueOnce({
+          Errors: [
+            { Key: 'generated/key', Code: 'AccessDenied', Message: 'denied' },
+          ],
+        }),
+      destroy: vi.fn(),
+    };
+    const logger = { error: vi.fn() };
+    (service as unknown as { client: typeof client }).client = client;
+    (service as unknown as { logger: typeof logger }).logger = logger;
+
+    const deletePrefix = (
+      service as unknown as {
+        deletePrefix(bucket: string, prefix: string): Promise<void>;
+      }
+    ).deletePrefix.bind(service);
+    await expect(deletePrefix('streams', 'generated/')).rejects.toMatchObject<
+      Partial<ProcessingError>
+    >({
+      retryable: true,
+      publicReason: 'Generated media cleanup is temporarily incomplete',
+    });
+    expect(logger.error).toHaveBeenCalledWith({
+      event: 'storage.delete_prefix.partial_failure',
+      failureCount: 1,
+      errorCodes: ['AccessDenied'],
+    });
+  });
+});

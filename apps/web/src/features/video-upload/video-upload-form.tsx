@@ -15,12 +15,9 @@ import { uploadFile } from '@/shared/upload/upload-file';
 import { queryKeys } from '@/shared/query/query-keys';
 import { getApiErrorPresentation } from '@/shared/api/api-error';
 
-const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
-
 export function validateVideoFile(file: File): string | null {
   if (file.size === 0) return 'Choose a non-empty video file.';
   if (file.type !== 'video/mp4') return 'Choose an MP4 video file.';
-  if (file.size > MAX_FILE_SIZE) return 'The video exceeds the 2 GB limit.';
   return null;
 }
 
@@ -149,7 +146,8 @@ export function VideoUploadForm() {
         <div>
           <h1 className="text-2xl font-bold">Upload a video</h1>
           <p className="mt-2 text-sm text-zinc-400" id="upload-help">
-            MP4, up to 2 GB. Uploads go directly to local object storage.
+            MP4. The deployment upload limit is enforced before direct object
+            storage upload.
           </p>
         </div>
         <label className="block text-sm text-zinc-300">

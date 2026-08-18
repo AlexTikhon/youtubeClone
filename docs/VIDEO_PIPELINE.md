@@ -14,7 +14,9 @@ The API records an upload intent before issuing a 15-minute signed PUT URL. Comp
 ownership, expected state/upload record, object existence, non-zero and expected byte length, and
 the intended `video/mp4` content type. It then transactionally creates the ORIGINAL asset and moves
 the video to UPLOADED, assigns processing generation 1, and writes a processing outbox row in the
-same transaction. A lightweight API publisher later enqueues the versioned BullMQ job.
+same transaction. A genuinely missing uploaded object remains a 409 conflict; object-storage
+unavailability returns 503 and does not instruct the user to upload again. A lightweight API publisher
+later enqueues the versioned BullMQ job.
 
 Because the signed PUT remains usable until its 15-minute expiry, the worker compares the object's
 current content length with the API-verified ORIGINAL record before downloading it. A changed length
@@ -97,6 +99,10 @@ failure reason. Failure of one required rendition fails the entire attempt; no p
 marked READY. Every attempt removes its unique local working directory, including all rendition
 directories and the master, in `finally`.
 
+Prefix cleanup checks the per-key `Errors` returned by every S3 `DeleteObjects` request. The API keeps
+a video in DELETING when any key failed; worker best-effort cleanup logs and propagates the partial
+failure to its existing cleanup/retry boundary instead of silently declaring success.
+
 ## Processing generations and the transactional outbox
 
 ```text
@@ -116,7 +122,8 @@ BullMQ attempts are infrastructure retries inside one logical generation. Three 
 generation 2 do not increment the generation; an owner retry after terminal failure creates
 generation 3. The retry endpoint is owner-only and accepts only FAILED. Before its short compare-and-set
 transaction it verifies exactly one ORIGINAL asset, valid size/content-type metadata, and the actual
-MinIO object. Two concurrent retry requests both observe FAILED at most briefly, but only one
+MinIO object. A missing object preserves the existing domain conflict, while storage unavailability
+returns 503. Two concurrent retry requests both observe FAILED at most briefly, but only one
 `WHERE status = FAILED AND processingGeneration = oldGeneration` update can win. The unique
 `(videoId, generation)` outbox constraint is a second guard.
 
@@ -163,9 +170,9 @@ path performs the complementary check, so either ordering of the race leaves REA
 
 The worker checks PROCESSING before generated upload and again through the final compare-and-set. If
 DELETING wins, that generated generation prefix is removed and READY is never published. Upload
-intents are capped at 2 GiB by default, the worker rejects media longer than two hours before
-encoding, and each
-media subprocess retains its 15-minute timeout. These are laptop-oriented guardrails.
+intents are capped by `MAX_UPLOAD_SIZE_BYTES` (2 GiB by default), the worker rejects media longer than
+two hours before encoding, and each media subprocess retains its 15-minute timeout. These are
+laptop-oriented guardrails.
 
 ## Worker health
 

@@ -272,7 +272,8 @@ after lifecycle ownership was lost.
 ## Media authorization and caching
 
 - PUBLIC videos are externally watchable only when READY and can appear on discovery surfaces once
-  published. Their guarded media responses use long-lived public immutable caching.
+  published. Their guarded media responses use `public, max-age=0, must-revalidate` because the
+  stable URL can later become non-public.
 - UNLISTED videos are externally watchable by ID when READY but never appear in public feeds/search.
   Their media responses are `private, no-store`.
 - PRIVATE videos are watchable only by the owning session and use `private, no-store`.

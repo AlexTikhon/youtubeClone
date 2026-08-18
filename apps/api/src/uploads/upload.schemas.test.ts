@@ -22,4 +22,21 @@ describe('startUploadSchema', () => {
       }),
     ).toThrow();
   });
+
+  it('validates numeric safety without imposing the deployment upload limit', () => {
+    expect(
+      startUploadSchema.parse({
+        fileName: 'large.mp4',
+        contentType: 'video/mp4',
+        sizeBytes: 3 * 1024 * 1024 * 1024,
+      }).sizeBytes,
+    ).toBe(3 * 1024 * 1024 * 1024);
+    expect(() =>
+      startUploadSchema.parse({
+        fileName: 'unsafe.mp4',
+        contentType: 'video/mp4',
+        sizeBytes: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).toThrow();
+  });
 });

@@ -33,8 +33,10 @@ export const apiEnvironmentSchema = infrastructureSchema.extend({
     .default(604_800),
   MAX_UPLOAD_SIZE_BYTES: z.coerce
     .number()
+    .finite()
     .int()
     .positive()
+    .max(Number.MAX_SAFE_INTEGER)
     .default(2 * 1024 * 1024 * 1024),
 });
 

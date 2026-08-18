@@ -97,7 +97,8 @@ rows and rolls the transaction back. The worker recognizes lost ownership and re
 prefix.
 
 **How does it recover?** Deletion removes the original, all stream/thumbnail prefixes, and finally the
-database row. If storage cleanup fails, the row remains DELETING and the owner can repeat DELETE.
+database row. A `DeleteObjects` response containing any per-key error is treated as incomplete cleanup,
+so the database row is not deleted. The row remains DELETING and the owner can repeat DELETE.
 
 **Remaining limitation:** Cleanup is synchronous from the API caller's perspective and may be slow.
 The best-effort worker cleanup can also fail during a storage outage, although a later deletion retry
@@ -108,18 +109,19 @@ targets the whole video prefix.
 **What fails?** Direct upload, completion HEAD, worker download/upload, playback, or deletion cleanup
 can fail depending on timing.
 
-**What happens?** Browser PUT reports an upload error. Completion reports that the object is not
-available. Worker download and generated-asset upload errors are classified retryable; BullMQ retries
-and eventually the video becomes FAILED if attempts are exhausted. Media routes return a safe 404
-when the object read fails. Deletion leaves the barrier in DELETING and returns 503.
+**What happens?** Browser PUT reports an upload error. Completion and processing retry return a safe
+503 instead of claiming that the original is absent. Worker download and generated-asset upload errors
+are classified retryable; BullMQ retries and eventually the video becomes FAILED if attempts are
+exhausted. Media routes return `MEDIA_STORAGE_UNAVAILABLE` with 503. Deletion leaves the barrier in
+DELETING and returns 503; partial bulk deletion is also failure rather than success.
 
 **How does it recover?** The browser can repeat the full signed PUT while its in-memory upload context
 exists; a FAILED processing generation can be retried after MinIO returns; DELETE can be repeated.
 The worker readiness endpoint reports bucket failure.
 
-**Remaining limitation:** The API readiness endpoint checks PostgreSQL and Redis, not MinIO. Media
-routes deliberately collapse storage errors to 404, and there is no automated orphan-object
-reconciler.
+**Remaining limitation:** The API readiness endpoint checks PostgreSQL and Redis, not MinIO, and there
+is no automated orphan-object reconciler. A genuine missing object remains a 404/conflict according to
+the endpoint; dependency unavailability is separately represented as 503.
 
 ## 8. Redis becomes unavailable
 
@@ -184,10 +186,11 @@ upload rows or stored originals. This is a known portfolio-scope gap.
 **What fails?** The authorized API route, MinIO read, network, or browser decoder cannot provide the
 next HLS resource.
 
-**What happens?** The media route returns a safe not-found response on storage failure. With hls.js,
-fatal network errors call `startLoad` at most twice and fatal media errors call `recoverMediaError`
-once. Exhaustion stops loading and displays a visible error with **Retry playback**. Native HLS relies
-on the browser's loading behavior and the component's media `error` handler.
+**What happens?** The media route returns 404 only when the object is genuinely missing and a safe 503
+when object storage is unavailable. With hls.js, fatal network errors call `startLoad` at most twice
+and fatal media errors call `recoverMediaError` once. Exhaustion stops loading and displays a visible
+error with **Retry playback**. Native HLS relies on the browser's loading behavior and the component's
+media `error` handler.
 
 **How does it recover?** The user retry destroys/recreates the playback attachment and starts again.
 Component cleanup always destroys hls.js, removes listeners and the source, and reloads the media
