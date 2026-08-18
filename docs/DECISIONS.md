@@ -88,8 +88,9 @@ Likes, comments, subscriptions, views, and history stay in PostgreSQL. Composite
 and subscription uniqueness; aggregate counts use `_count` or deliberate count queries. Redis counters
 would add reconciliation complexity without demonstrated need.
 
-Only authenticated viewers count. The threshold is `min(10 seconds, 50% of duration)` and a
-unique UTC-day bucket resists concurrent duplicates. Anonymous playback remains supported without
+Only authenticated viewers count. The threshold is
+`min(10 seconds, max(1 second, 50% of duration))`, and a unique UTC-day bucket resists concurrent
+duplicates. Anonymous playback remains supported without
 fingerprinting. Distributed rate limiting and rolling view windows are production follow-ups.
 
 ## Synchronous retryable deletion

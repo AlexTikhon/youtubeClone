@@ -51,6 +51,27 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Start MinIO for API integration tests
+        run: |
+          docker run --detach --name minio-ci \
+            --publish 9000:9000 \
+            --env MINIO_ROOT_USER=ci-access-key \
+            --env MINIO_ROOT_PASSWORD=ci-secret-key \
+            minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live > /dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker logs minio-ci
+              exit 1
+            fi
+            sleep 1
+          done
+          docker run --rm --network container:minio-ci \
+            --entrypoint /bin/sh \
+            minio/mc:RELEASE.2025-08-13T08-35-41Z \
+            -c 'mc alias set local http://127.0.0.1:9000 ci-access-key ci-secret-key && mc mb --ignore-existing local/video-originals local/video-streams local/video-thumbnails'
       - run: pnpm prisma:migrate:deploy
       - run: pnpm verify
       - run: pnpm --filter @youtube-clone/api test:integration

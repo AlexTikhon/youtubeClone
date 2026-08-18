@@ -97,8 +97,12 @@ The CI workflow runs the fast verification set, API integration tests, and a sep
 real FFmpeg suites remain explicit because encoding videos on every push is disproportionate here.
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Interview project walkthrough](docs/PROJECT_WALKTHROUGH.md)
+- [Failure scenarios](docs/FAILURE_SCENARIOS.md)
+- [Code tour](docs/CODE_TOUR.md)
+- [40 senior interview questions](docs/INTERVIEW_QA.md)
 - [Video pipeline](docs/VIDEO_PIPELINE.md)
 - [Search](docs/SEARCH.md)
 - [Decision record](docs/DECISIONS.md)
-- [5–10 minute demo](docs/DEMO.md)
+- [5–7 minute demo](docs/DEMO.md)
 - [Senior interview guide](docs/INTERVIEW.md)

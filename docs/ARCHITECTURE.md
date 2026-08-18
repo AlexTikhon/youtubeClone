@@ -125,8 +125,9 @@ not an infinite recommendation archive.
 `deleteMany`. Counts remain PostgreSQL aggregates. The centralized watch-access check gates watch DTOs,
 comments, likes, qualified views, history writes, and media bytes.
 
-A view requires authenticated forward playback of `min(10 seconds, 50% of duration)` and is unique per
-user/video/UTC day. `WatchHistory` separately stores the latest position. The browser writes at most
+A view requires authenticated forward playback of
+`min(10 seconds, max(1 second, 50% of duration))` and is unique per user/video/UTC day.
+`WatchHistory` separately stores the latest position. The browser writes at most
 about every 12 seconds and on pause/end. Resume applies only above five seconds and more than ten
 seconds from completion. The HLS player only emits callbacks and has no persistence knowledge.
 

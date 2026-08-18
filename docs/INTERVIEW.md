@@ -1,5 +1,9 @@
 # Senior engineering interview guide
 
+Use [PROJECT_WALKTHROUGH.md](PROJECT_WALKTHROUGH.md) as the primary spoken study guide and
+[INTERVIEW_QA.md](INTERVIEW_QA.md) for the complete 30 implementation questions plus 10 architecture
+challenges. This document remains the compact rationale reference.
+
 ## System design
 
 ```text

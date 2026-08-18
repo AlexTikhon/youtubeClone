@@ -66,7 +66,7 @@ level string from each output.
 ## Object layout
 
 ```text
-video-originals/originals/{videoId}/{uploadId}.mp4
+video-originals/originals/{videoId}/{randomObjectId}.mp4
 video-thumbnails/videos/{videoId}/generations/{generation}/thumbnail/thumbnail.jpg
 video-streams/videos/{videoId}/generations/{generation}/hls/master.m3u8
 video-streams/videos/{videoId}/generations/{generation}/hls/360p/index.m3u8
@@ -75,8 +75,9 @@ video-streams/videos/{videoId}/generations/{generation}/hls/480p/index.m3u8
 video-streams/videos/{videoId}/generations/{generation}/hls/720p/index.m3u8
 ```
 
-Generated paths are deterministic within an isolated logical generation. Each variant's segments upload before its playlist; the master
-uploads last. Segments remain only in object storage. PostgreSQL stores ORIGINAL, THUMBNAIL, and one
+Generated paths are deterministic within an isolated logical generation. Each variant's segments
+upload before its playlist; the master uploads last. Segments remain only in object storage.
+PostgreSQL stores ORIGINAL, THUMBNAIL, and one
 HLS_MANIFEST row whose object key is `master.m3u8` and whose JSON metadata describes every rendition.
 The successful transaction creates the authoritative THUMBNAIL and HLS_MANIFEST rows. Guarded media
 routes resolve those records, so stable public URLs never expose storage keys and never select an
@@ -87,8 +88,8 @@ unsuccessful generation. Existing legacy `hls/...` records remain readable.
 BullMQ uses three attempts with exponential backoff and a deterministic
 `video-{videoId}-generation-{generation}` job ID.
 This is at-least-once execution, not distributed exactly-once processing. Retries reuse deterministic
-generation keys, clears that generation's partial prefix before upload, and upserts asset rows. READY delivery is a
-no-op. Network/storage/database failures are
+generation keys, clear that generation's partial prefix before upload, and upsert asset rows. READY
+delivery is a no-op. Network/storage/database failures are
 retryable; invalid probe output, unavailable media executables, and deterministic FFmpeg failures
 are non-retryable. The video moves to FAILED only for a non-retryable error or after retry exhaustion.
 Terminal failure makes a best-effort removal of generated thumbnail/HLS objects and stores a safe
@@ -161,8 +162,9 @@ then conditionally initializes `publishedAt` from the current database visibilit
 path performs the complementary check, so either ordering of the race leaves READY/PUBLIC published.
 
 The worker checks PROCESSING before generated upload and again through the final compare-and-set. If
-DELETING wins, that generated generation prefix is removed and READY is never published. Upload intents are
-capped at 2 GiB by default, the worker rejects media longer than two hours before encoding, and each
+DELETING wins, that generated generation prefix is removed and READY is never published. Upload
+intents are capped at 2 GiB by default, the worker rejects media longer than two hours before
+encoding, and each
 media subprocess retains its 15-minute timeout. These are laptop-oriented guardrails.
 
 ## Worker health
@@ -184,6 +186,7 @@ $env:RUN_MEDIA_E2E='true'; pnpm test:e2e:media
 
 The media integration suite generates 720p and 360p sources, validates the real master, variants,
 segments, audio-less behavior, and FFprobe playback, and drives a FAILED generation 1 through a real
-generation-2 pipeline to READY with isolated authoritative assets. The browser test generates a two-second 720p
-MP4, uploads it through the signed URL, waits for READY, verifies all three master variants, plays it,
+generation-2 pipeline to READY with isolated authoritative assets. The browser test generates a
+two-second 720p MP4, uploads it through the signed URL, waits for READY, verifies all three master
+variants, plays it,
 deletes the video, and removes the fixture. No media binary is committed to the repository.
