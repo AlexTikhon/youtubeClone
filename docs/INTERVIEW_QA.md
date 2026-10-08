@@ -68,11 +68,14 @@ not exactly-once.
 ## 6. What happens if the same processing job is delivered twice?
 
 **Short interview answer:** The worker checks status and generation. READY duplicates return without
-processing, stale generations return without processing, and concurrent work must still win
-compare-and-set ownership before publishing READY.
+processing, stale generations return without processing, and overlapping executions of one generation
+are separated by an attempt identity with a renewable database lease. Only the attempt that still owns
+the lease can publish READY.
 
-**Deep follow-up:** Generation-specific paths and asset upserts protect stored output. Duplicate
-execution may waste CPU, but it cannot intentionally make an old result authoritative.
+**Deep follow-up:** Each attempt writes under its own prefix, the READY transaction is fenced by
+generation and attempt ID and publishes the asset rows atomically, and a loser deletes only its own
+unpublished objects. A late failure after READY changes nothing. Duplicate execution may waste CPU, but
+it cannot make a losing result authoritative; a job ID alone could not give that guarantee.
 
 **Code reference:** `apps/worker/src/video-processing.pipeline.ts`;
 `apps/worker/src/storage.service.ts`.
@@ -417,7 +420,8 @@ general notification channel justified connection authorization and fan-out infr
 would add bandwidth, backpressure, timeout, and scaling responsibilities that object storage already
 solves.
 
-**Deep follow-up:** Direct single PUT does not support multipart resume, and interrupted uploads need
+**Deep follow-up:** A presigned POST policy lets storage itself enforce the exact key, content type,
+and size, but a single POST does not support multipart resume, and interrupted uploads need
 better lifecycle cleanup. I would add multipart uploads, persisted resume UI, and abandoned-upload
 retention if upload reliability became a product requirement.
 

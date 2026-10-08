@@ -46,17 +46,9 @@ export class VideoWorkerService
         queue: VIDEO_PROCESSING_QUEUE_NAME,
       }),
     );
-    this.worker.on('failed', (job, error) =>
-      this.logger.error({
-        event: 'video.processing.bull_job_failed',
-        videoId: job?.data.videoId,
-        jobId: job?.id,
-        generation: job?.data.generation,
-        correlationId: job?.data.correlationId,
-        bullAttempt: job?.attemptsMade,
-        error: error.message,
-      }),
-    );
+    this.worker.on('failed', (job, error) => {
+      void this.handleJobFailed(job, error);
+    });
     this.worker.on('error', (error) =>
       this.logger.error({
         event: 'worker.connection.error',
@@ -73,6 +65,60 @@ export class VideoWorkerService
     if (!this.worker || !this.worker.isRunning())
       throw new Error('BullMQ worker is not running');
     await this.worker.waitUntilReady();
+  }
+
+  /**
+   * Logs every BullMQ failure. A terminal one (retries exhausted, or a stall
+   * that BullMQ failed without running `process()`'s error handling) also moves
+   * the generation to a recoverable FAILED state, unless a live lease shows a
+   * worker is still active.
+   */
+  private async handleJobFailed(
+    job: Job<ProcessVideoJob> | undefined,
+    error: Error,
+  ): Promise<void> {
+    this.logger.error({
+      event: 'video.processing.bull_job_failed',
+      videoId: job?.data.videoId,
+      jobId: job?.id,
+      generation: job?.data.generation,
+      correlationId: job?.data.correlationId,
+      bullAttempt: job?.attemptsMade,
+      error: error.message,
+    });
+    if (!job) return;
+    const terminal =
+      job.attemptsMade >= (job.opts.attempts ?? 1) ||
+      /stalled/i.test(error.message);
+    if (!terminal) return;
+    try {
+      const recorded = await this.pipeline.failStranded(
+        job.data.videoId,
+        job.data.generation,
+        'Video processing stopped unexpectedly. Retry it.',
+      );
+      if (recorded) {
+        this.logger.error({
+          event: 'video.processing.stranded_failed',
+          videoId: job.data.videoId,
+          jobId: job.id,
+          generation: job.data.generation,
+          correlationId: job.data.correlationId,
+        });
+      }
+    } catch (recordError) {
+      this.logger.error({
+        event: 'video.processing.failure_record_failed',
+        videoId: job.data.videoId,
+        jobId: job.id,
+        generation: job.data.generation,
+        correlationId: job.data.correlationId,
+        error:
+          recordError instanceof Error
+            ? recordError.message
+            : String(recordError),
+      });
+    }
   }
 
   private async process(job: Job<ProcessVideoJob>): Promise<void> {
@@ -106,22 +152,52 @@ export class VideoWorkerService
       const attempts = job.opts.attempts ?? 1;
       const exhausted = job.attemptsMade + 1 >= attempts;
       if (!processingError.retryable) job.discard();
-      if (!processingError.retryable || exhausted) {
-        const recorded = await this.pipeline.fail(
-          input.videoId,
-          input.generation,
-          processingError.publicReason,
-        );
-        if (recorded) {
+      const attempt = processingError.attemptId
+        ? {
+            videoId: input.videoId,
+            generation: input.generation,
+            attemptId: processingError.attemptId,
+          }
+        : undefined;
+      if (attempt) {
+        try {
+          if (!processingError.retryable || exhausted) {
+            // Fenced by attempt identity: a superseded attempt records nothing.
+            const recorded = await this.pipeline.fail(
+              attempt,
+              processingError.publicReason,
+            );
+            if (recorded) {
+              this.logger.error({
+                event: 'video.processing.failed',
+                videoId: input.videoId,
+                jobId: job.id,
+                generation: input.generation,
+                attemptId: attempt.attemptId,
+                bullAttempt: job.attemptsMade + 1,
+                correlationId: input.correlationId,
+                durationMs:
+                  Math.round((performance.now() - startedAt) * 100) / 100,
+                reason: processingError.publicReason,
+              });
+            }
+          } else {
+            await this.pipeline.release(attempt);
+          }
+        } catch (recordError) {
+          // The BullMQ failure below still surfaces; reconciliation recovers
+          // generations whose terminal state could not be recorded here.
           this.logger.error({
-            event: 'video.processing.failed',
+            event: 'video.processing.failure_record_failed',
             videoId: input.videoId,
             jobId: job.id,
             generation: input.generation,
-            bullAttempt: job.attemptsMade + 1,
+            attemptId: attempt.attemptId,
             correlationId: input.correlationId,
-            durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
-            reason: processingError.publicReason,
+            error:
+              recordError instanceof Error
+                ? recordError.message
+                : String(recordError),
           });
         }
       }

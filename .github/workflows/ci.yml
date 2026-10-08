@@ -75,6 +75,8 @@ jobs:
       - run: pnpm prisma:migrate:deploy
       - run: pnpm verify
       - run: pnpm --filter @youtube-clone/api test:integration
+      - name: Worker attempt-ownership integration (real PostgreSQL and MinIO, no FFmpeg)
+        run: pnpm --filter @youtube-clone/worker exec vitest run --config vitest.integration.config.ts test/attempt-ownership
 
   browser-e2e:
     runs-on: ubuntu-latest

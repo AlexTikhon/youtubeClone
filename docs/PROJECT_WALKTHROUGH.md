@@ -52,7 +52,7 @@ ffprobe and FFmpeg. It demonstrates end-to-end engineering choices rather than Y
 ```text
 Browser -- REST + HttpOnly session --> Next.js UI --> NestJS API --> PostgreSQL
    |                                                     |             |
-   +---------------- signed PUT ----------------------> MinIO          |
+   +------------ presigned POST policy ----------------> MinIO          |
                                                          ^             v
 authorized thumbnail/HLS <------- NestJS API <-----------+     outbox publisher
                                                                        |
@@ -93,13 +93,14 @@ VideoUploadForm -> POST /api/v1/videos                 -> DRAFT
       v
 POST /api/v1/videos/:id/upload
       |  UploadsService records VideoUpload + UPLOADING
-      |  S3StorageAdapter returns a 15-minute signed PUT
+      |  S3StorageAdapter returns a 15-minute presigned POST policy
+      |  (exact key, content type, and size enforced by MinIO)
       v
 browser XMLHttpRequest -------------------------------> MinIO original
       |  progress and AbortSignal stay in the browser
       v
 POST /api/v1/videos/:id/upload/complete
-      |  HEAD verifies size and content type
+      |  HEAD verifies size and content type; replays return current state
       v
 PostgreSQL transaction
       +-- UPLOADING -> UPLOADED; generation 1
@@ -176,8 +177,11 @@ job generation 1 != database generation 2 -> stale successful no-op
 A processing generation is a logical owner-requested run. A BullMQ attempt is only an infrastructure
 retry inside that generation; the queue allows three attempts with exponential backoff. The worker
 checks generation and status when it receives the job, before generated upload, before the final
-commit, and inside the compare-and-set that changes PROCESSING to READY. Generated keys include
-`videos/{videoId}/generations/{generation}/`, so an old run cannot overwrite a newer run's bytes.
+commit, and inside the compare-and-set that changes PROCESSING to READY. Each worker attempt holds a
+renewable database lease and writes under its own
+`videos/{videoId}/generations/{generation}/attempts/{attemptId}/` prefix, so neither an old
+generation nor an overlapping attempt can overwrite or delete the winner's bytes; the READY transaction
+is fenced by generation and attempt.
 
 Deletion uses the same ownership idea. `VideosService.delete` first compare-and-sets the row to
 DELETING, which immediately blocks watch/media access and worker completion. Storage cleanup occurs
@@ -384,7 +388,7 @@ guarantees or business metrics.
 ```text
 Next.js UI -> NestJS API -> PostgreSQL
     |              |            |
-signed PUT       media proxy   outbox
+POST policy      media proxy   outbox
     v              v            v
   MinIO <------ worker <- BullMQ/Redis
                    |

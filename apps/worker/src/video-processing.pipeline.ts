@@ -2,27 +2,61 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 import {
   assertVideoTransition,
   type ProcessVideoJob,
 } from '@youtube-clone/types';
 
+import { workerEnvironment } from './config.js';
 import { DatabaseService } from './database.service.js';
 import { selectRenditions, type GeneratedRendition } from './hls-renditions.js';
 import { MediaToolsService } from './media-tools.service.js';
+import {
+  AttemptBusyError,
+  AttemptOwnershipLostError,
+  asProcessingError,
+} from './processing-error.js';
+import {
+  AttemptLease,
+  acquireAttempt,
+  failStrandedGeneration,
+  releaseAttempt,
+  type AttemptRef,
+} from './processing-lease.js';
 import { StorageService } from './storage.service.js';
+
+export interface PipelineOptions {
+  leaseSeconds?: number;
+  renewIntervalMs?: number;
+  attemptMaxMs?: number;
+}
+
+export const PIPELINE_OPTIONS = Symbol('PIPELINE_OPTIONS');
 
 @Injectable()
 export class VideoProcessingPipeline {
   private readonly logger = new Logger(VideoProcessingPipeline.name);
+  private readonly leaseSeconds: number;
+  private readonly renewIntervalMs: number;
+  private readonly attemptMaxMs: number;
 
   constructor(
     @Inject(DatabaseService) private readonly database: DatabaseService,
     @Inject(StorageService) private readonly storage: StorageService,
     @Inject(MediaToolsService) private readonly mediaTools: MediaToolsService,
-  ) {}
+    @Optional() @Inject(PIPELINE_OPTIONS) options: PipelineOptions = {},
+  ) {
+    this.leaseSeconds =
+      options.leaseSeconds ?? workerEnvironment.WORKER_LEASE_SECONDS;
+    this.renewIntervalMs =
+      options.renewIntervalMs ??
+      Math.max(1_000, (this.leaseSeconds * 1_000) / 3);
+    this.attemptMaxMs =
+      options.attemptMaxMs ??
+      workerEnvironment.WORKER_ATTEMPT_MAX_SECONDS * 1_000;
+  }
 
   async execute(
     jobId: string,
@@ -35,14 +69,17 @@ export class VideoProcessingPipeline {
         assets: { where: { id: input.originalAssetId, kind: 'ORIGINAL' } },
       },
     });
+    const logContext = {
+      videoId: input.videoId,
+      jobId,
+      generation: input.generation,
+      bullAttempt,
+      correlationId: input.correlationId,
+    };
     if (!video) {
       this.logger.log({
         event: 'video.processing.cancelled',
-        videoId: input.videoId,
-        jobId,
-        generation: input.generation,
-        bullAttempt,
-        correlationId: input.correlationId,
+        ...logContext,
         reason: 'video_deleted',
       });
       return;
@@ -50,80 +87,62 @@ export class VideoProcessingPipeline {
     if (video.processingGeneration !== input.generation) {
       this.logger.log({
         event: 'video.processing.stale_job_skipped',
-        videoId: input.videoId,
-        jobId,
-        generation: input.generation,
+        ...logContext,
         currentGeneration: video.processingGeneration,
-        bullAttempt,
-        correlationId: input.correlationId,
       });
       return;
     }
     if (video.status === 'DELETING') {
       this.logger.log({
         event: 'video.processing.cancelled',
-        videoId: input.videoId,
-        jobId,
-        generation: input.generation,
-        bullAttempt,
-        correlationId: input.correlationId,
+        ...logContext,
         reason: 'deleting',
       });
       return;
     }
     if (video.assets.length !== 1)
       throw new Error('Original asset was not found');
-    if (video.status === 'READY') {
+    if (video.status === 'READY' || video.status === 'FAILED') {
       this.logger.log({
         event: 'video.processing.duplicate_skipped',
-        videoId: input.videoId,
-        jobId,
-        generation: input.generation,
-        bullAttempt,
-        correlationId: input.correlationId,
+        ...logContext,
+        status: video.status,
       });
       return;
     }
-    if (video.status === 'UPLOADED') {
-      assertVideoTransition(video.status, 'PROCESSING');
-      const claimed = await this.database.video.updateMany({
-        where: {
-          id: video.id,
-          status: 'UPLOADED',
-          processingGeneration: input.generation,
-        },
-        data: {
-          status: 'PROCESSING',
-          failureReason: null,
-          processingStartedAt: new Date(),
-          processingFinishedAt: null,
-        },
-      });
-      if (claimed.count !== 1)
-        throw new Error('Video processing claim was lost');
-    } else if (video.status === 'PROCESSING') {
-      await this.database.video.updateMany({
-        where: {
-          id: video.id,
-          status: 'PROCESSING',
-          processingGeneration: input.generation,
-          processingStartedAt: null,
-        },
-        data: { processingStartedAt: new Date() },
-      });
-    } else {
+    if (video.status !== 'UPLOADED' && video.status !== 'PROCESSING')
       throw new Error(`Video is not processable from ${video.status}`);
-    }
+    if (video.status === 'UPLOADED')
+      assertVideoTransition(video.status, 'PROCESSING');
 
+    const attemptId = await acquireAttempt(this.database, {
+      videoId: video.id,
+      generation: input.generation,
+      leaseSeconds: this.leaseSeconds,
+    });
+    if (!attemptId) {
+      if (await this.explainRejectedAcquisition(video.id, input, logContext))
+        return;
+      throw new AttemptBusyError();
+    }
+    const attempt: AttemptRef = {
+      videoId: video.id,
+      generation: input.generation,
+      attemptId,
+    };
+    const lease = new AttemptLease(this.database, attempt, {
+      leaseSeconds: this.leaseSeconds,
+      renewIntervalMs: this.renewIntervalMs,
+      maxDurationMs: this.attemptMaxMs,
+    });
+    lease.start();
+    const attemptContext = { ...logContext, attemptId };
     this.logger.log({
       event: 'video.processing.started',
-      videoId: input.videoId,
-      jobId,
-      generation: input.generation,
-      bullAttempt,
-      correlationId: input.correlationId,
+      ...attemptContext,
     });
 
+    let committed = false;
     const workDirectory = await mkdtemp(
       join(tmpdir(), `youtube-clone-${video.id}-`),
     );
@@ -154,11 +173,7 @@ export class VideoProcessingPipeline {
         const startedAt = performance.now();
         this.logger.log({
           event: 'video.processing.rendition.started',
-          videoId: input.videoId,
-          jobId,
-          generation: input.generation,
-          bullAttempt,
-          correlationId: input.correlationId,
+          ...attemptContext,
           rendition: spec.name,
         });
         const generated = await this.mediaTools.generateHlsRendition(
@@ -169,11 +184,7 @@ export class VideoProcessingPipeline {
         generatedRenditions.push(generated);
         this.logger.log({
           event: 'video.processing.rendition.completed',
-          videoId: input.videoId,
-          jobId,
-          generation: input.generation,
-          bullAttempt,
-          correlationId: input.correlationId,
+          ...attemptContext,
           rendition: spec.name,
           durationMs: Math.round(performance.now() - startedAt),
         });
@@ -185,68 +196,84 @@ export class VideoProcessingPipeline {
       );
       this.logger.log({
         event: 'video.processing.master.created',
-        videoId: input.videoId,
-        jobId,
-        generation: input.generation,
-        bullAttempt,
-        correlationId: input.correlationId,
+        ...attemptContext,
         renditionCount: generatedRenditions.length,
         durationMs: Math.round(performance.now() - masterStartedAt),
       });
-      const stillProcessable = await this.database.video.count({
-        where: {
-          id: video.id,
-          status: 'PROCESSING',
-          processingGeneration: input.generation,
-        },
-      });
-      if (stillProcessable !== 1) {
-        this.logger.log({
-          event: 'video.processing.cancelled',
-          videoId: input.videoId,
-          jobId,
-          generation: input.generation,
-          bullAttempt,
-          correlationId: input.correlationId,
-          reason: 'ownership_lost_before_upload',
-        });
-        return;
-      }
-      await this.storage.removeGenerated(video.id, input.generation);
+
+      // Verified ownership gates every step that creates storage objects. The
+      // objects live under this attempt's own prefix, so they cannot collide
+      // with another attempt's output even if ownership is lost afterwards.
+      await lease.ensureOwned();
       const thumbnail = await this.storage.uploadThumbnail(
         video.id,
         input.generation,
+        attemptId,
         thumbnailPath,
       );
       const hls = await this.storage.uploadHls(
         video.id,
         input.generation,
+        attemptId,
         hlsDirectory,
         renditionSpecs.map((spec) => spec.name),
       );
+      await lease.ensureOwned();
 
-      const ownsBeforeCommit = await this.database.video.count({
-        where: {
-          id: video.id,
-          status: 'PROCESSING',
-          processingGeneration: input.generation,
-        },
-      });
-      if (ownsBeforeCommit !== 1) {
-        await this.storage.removeGenerated(video.id, input.generation);
-        this.logger.log({
-          event: 'video.processing.cancelled',
-          videoId: input.videoId,
-          jobId,
-          generation: input.generation,
-          bullAttempt,
-          correlationId: input.correlationId,
-          reason: 'ownership_lost_before_commit',
-        });
-        return;
-      }
+      const renditionMetadata = {
+        segmentDurationSeconds: 6,
+        renditions: generatedRenditions.map((generated) => {
+          const stored = hls.renditions.find(
+            (rendition) => rendition.name === generated.spec.name,
+          );
+          if (!stored)
+            throw new Error(
+              `Stored ${generated.spec.name} rendition metadata is missing`,
+            );
+          return {
+            name: generated.spec.name,
+            storagePrefix: stored.storagePrefix,
+            manifestKey: stored.manifestKey,
+            width: generated.spec.width,
+            height: generated.spec.height,
+            videoBitrateKbps: generated.spec.videoBitrateKbps,
+            audioBitrateKbps: metadata.audioCodec
+              ? generated.spec.audioBitrateKbps
+              : null,
+            bandwidthBitsPerSecond: generated.spec.bandwidthBitsPerSecond,
+            segmentCount: stored.segmentCount,
+            videoCodec: 'h264',
+            audioCodec: metadata.audioCodec ? 'aac' : null,
+          };
+        }),
+      };
+      const largestRendition = renditionSpecs.at(-1)!;
 
+      // The fenced READY transition is the first statement, so it takes the row
+      // lock that any competing takeover would need; asset publication commits
+      // atomically with it or not at all.
       await this.database.$transaction(async (transaction) => {
+        assertVideoTransition('PROCESSING', 'READY');
+        const completed = await transaction.video.updateMany({
+          where: {
+            id: video.id,
+            status: 'PROCESSING',
+            processingGeneration: input.generation,
+            processingAttemptId: attemptId,
+          },
+          data: {
+            status: 'READY',
+            durationSeconds: Math.round(metadata.durationSeconds),
+            width: metadata.width,
+            height: metadata.height,
+            failureReason: null,
+            processingFinishedAt: new Date(),
+            committedAttemptId: attemptId,
+            processingAttemptId: null,
+            processingLeaseExpiresAt: null,
+          },
+        });
+        if (completed.count !== 1) throw new AttemptOwnershipLostError();
         await transaction.videoAsset.update({
           where: { id: original.id },
           data: {
@@ -263,14 +290,15 @@ export class VideoProcessingPipeline {
             },
           },
         });
-        await transaction.videoAsset.upsert({
+        await transaction.videoAsset.deleteMany({
           where: {
-            bucket_objectKey: {
-              bucket: thumbnail.bucket,
-              objectKey: thumbnail.objectKey,
-            },
+            videoId: video.id,
+            kind: { in: ['THUMBNAIL', 'HLS_MANIFEST', 'HLS_RENDITION'] },
+            OR: [{ attemptId: null }, { attemptId: { not: attemptId } }],
           },
-          create: {
+        });
+        await transaction.videoAsset.create({
+          data: {
             videoId: video.id,
             kind: 'THUMBNAIL',
             bucket: thumbnail.bucket,
@@ -279,49 +307,11 @@ export class VideoProcessingPipeline {
             sizeBytes: thumbnail.sizeBytes,
             width: thumbnailSize.width,
             height: thumbnailSize.height,
-          },
-          update: {
-            sizeBytes: thumbnail.sizeBytes,
-            width: thumbnailSize.width,
-            height: thumbnailSize.height,
+            attemptId,
           },
         });
-        const renditionMetadata = {
-          segmentDurationSeconds: 6,
-          renditions: generatedRenditions.map((generated) => {
-            const stored = hls.renditions.find(
-              (rendition) => rendition.name === generated.spec.name,
-            );
-            if (!stored)
-              throw new Error(
-                `Stored ${generated.spec.name} rendition metadata is missing`,
-              );
-            return {
-              name: generated.spec.name,
-              storagePrefix: stored.storagePrefix,
-              manifestKey: stored.manifestKey,
-              width: generated.spec.width,
-              height: generated.spec.height,
-              videoBitrateKbps: generated.spec.videoBitrateKbps,
-              audioBitrateKbps: metadata.audioCodec
-                ? generated.spec.audioBitrateKbps
-                : null,
-              bandwidthBitsPerSecond: generated.spec.bandwidthBitsPerSecond,
-              segmentCount: stored.segmentCount,
-              videoCodec: 'h264',
-              audioCodec: metadata.audioCodec ? 'aac' : null,
-            };
-          }),
-        };
-        const largestRendition = renditionSpecs.at(-1)!;
-        await transaction.videoAsset.upsert({
-          where: {
-            bucket_objectKey: {
-              bucket: hls.bucket,
-              objectKey: hls.masterManifestKey,
-            },
-          },
-          create: {
+        await transaction.videoAsset.create({
+          data: {
             videoId: video.id,
             kind: 'HLS_MANIFEST',
             bucket: hls.bucket,
@@ -332,33 +322,9 @@ export class VideoProcessingPipeline {
             height: largestRendition.height,
             durationSeconds: Math.round(metadata.durationSeconds),
             metadata: renditionMetadata,
-          },
-          update: {
-            sizeBytes: hls.masterManifestSizeBytes,
-            width: largestRendition.width,
-            height: largestRendition.height,
-            durationSeconds: Math.round(metadata.durationSeconds),
-            metadata: renditionMetadata,
+            attemptId,
           },
         });
-        assertVideoTransition('PROCESSING', 'READY');
-        const completed = await transaction.video.updateMany({
-          where: {
-            id: video.id,
-            status: 'PROCESSING',
-            processingGeneration: input.generation,
-          },
-          data: {
-            status: 'READY',
-            durationSeconds: Math.round(metadata.durationSeconds),
-            width: metadata.width,
-            height: metadata.height,
-            failureReason: null,
-            processingFinishedAt: new Date(),
-          },
-        });
-        if (completed.count !== 1)
-          throw new Error('Video state changed before processing completion');
         await transaction.video.updateMany({
           where: {
             id: video.id,
@@ -369,115 +335,259 @@ export class VideoProcessingPipeline {
           data: { publishedAt: new Date() },
         });
       });
-      try {
-        await this.storage.removeObsoleteGenerated(video.id, input.generation);
-      } catch (error) {
-        this.logger.warn({
-          event: 'video.processing.cleanup_failed',
-          videoId: input.videoId,
-          jobId,
-          generation: input.generation,
-          bullAttempt,
-          correlationId: input.correlationId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      committed = true;
+      await this.removeObsolete(attempt, attemptContext);
       this.logger.log({
         event: 'video.processing.ready',
-        videoId: input.videoId,
-        jobId,
-        generation: input.generation,
-        bullAttempt,
-        correlationId: input.correlationId,
+        ...attemptContext,
         durationSeconds: metadata.durationSeconds,
         width: metadata.width,
         height: metadata.height,
         renditionCount: generatedRenditions.length,
       });
     } catch (error) {
-      const current = await this.database.video.findUnique({
-        where: { id: video.id },
-        select: { status: true, processingGeneration: true },
-      });
-      if (
-        !current ||
-        current.status !== 'PROCESSING' ||
-        current.processingGeneration !== input.generation
-      ) {
-        await this.storage
-          .removeGenerated(video.id, input.generation)
-          .catch((cleanupError: unknown) =>
-            this.logger.warn({
-              event: 'video.processing.cleanup_failed',
-              videoId: input.videoId,
-              jobId,
-              generation: input.generation,
-              bullAttempt,
-              correlationId: input.correlationId,
-              error:
-                cleanupError instanceof Error
-                  ? cleanupError.message
-                  : String(cleanupError),
-            }),
-          );
-        this.logger.log({
-          event:
-            current && current.processingGeneration !== input.generation
-              ? 'video.processing.stale_job_skipped'
-              : 'video.processing.cancelled',
-          videoId: input.videoId,
-          jobId,
-          generation: input.generation,
-          currentGeneration: current?.processingGeneration,
-          bullAttempt,
-          correlationId: input.correlationId,
-          reason: current?.status ?? 'deleted',
-        });
+      const outcome = await this.classifyFailure(
+        attempt,
+        error,
+        attemptContext,
+      );
+      if (outcome === 'committed') {
+        committed = true;
+        await this.removeObsolete(attempt, attemptContext);
         return;
       }
-      throw error;
+      if (outcome === 'abandoned') return;
+      throw this.tag(outcome, attemptId);
     } finally {
+      lease.stop();
+      if (!committed) await this.cleanupUnpublished(attempt);
       await rm(workDirectory, { recursive: true, force: true });
     }
   }
 
-  async fail(
-    videoId: string,
-    generation: number,
-    publicReason: string,
-  ): Promise<boolean> {
-    try {
-      await this.storage.removeGenerated(videoId, generation);
-    } catch (error) {
-      this.logger.warn({
-        event: 'video.processing.cleanup_failed',
-        videoId,
-        generation,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  /**
+   * Records a terminal failure, but only for the attempt that owns the
+   * generation. A late failure from a superseded or finished attempt cannot
+   * change lifecycle state, and no storage is touched unless the state change
+   * proves this attempt still owned the work.
+   */
+  async fail(attempt: AttemptRef, publicReason: string): Promise<boolean> {
     assertVideoTransition('PROCESSING', 'FAILED');
     const failed = await this.database.video.updateMany({
       where: {
-        id: videoId,
+        id: attempt.videoId,
         status: 'PROCESSING',
-        processingGeneration: generation,
+        processingGeneration: attempt.generation,
+        processingAttemptId: attempt.attemptId,
       },
       data: {
         status: 'FAILED',
         failureReason: publicReason.slice(0, 500),
         processingFinishedAt: new Date(),
+        processingAttemptId: null,
+        processingLeaseExpiresAt: null,
       },
     });
     if (failed.count !== 1) {
       this.logger.log({
         event: 'video.processing.stale_job_skipped',
-        videoId,
-        generation,
+        videoId: attempt.videoId,
+        generation: attempt.generation,
+        attemptId: attempt.attemptId,
         reason: 'stale_failure_ignored',
       });
       return false;
     }
+    await this.cleanupUnpublished(attempt);
     return true;
+  }
+
+  /**
+   * Fallback for jobs BullMQ failed terminally outside `process()` (stalls).
+   * Lease-conditional, so a live worker is never interrupted.
+   */
+  async failStranded(
+    videoId: string,
+    generation: number,
+    publicReason: string,
+  ): Promise<boolean> {
+    const before = await this.database.video.findUnique({
+      where: { id: videoId },
+      select: { processingAttemptId: true },
+    });
+    const failed = await failStrandedGeneration(this.database, {
+      videoId,
+      generation,
+      reason: publicReason,
+    });
+    if (failed && before?.processingAttemptId) {
+      await this.cleanupUnpublished({
+        videoId,
+        generation,
+        attemptId: before.processingAttemptId,
+      });
+    }
+    return failed;
+  }
+
+  /** Hands the generation back for an immediate retry by the next delivery. */
+  async release(attempt: AttemptRef): Promise<boolean> {
+    return releaseAttempt(this.database, attempt);
+  }
+
+  private tag(error: unknown, attemptId: string) {
+    const processingError = asProcessingError(error);
+    processingError.attemptId = attemptId;
+    return processingError;
+  }
+
+  /** Explains why acquisition found nothing to take; true when the job is moot. */
+  private async explainRejectedAcquisition(
+    videoId: string,
+    input: ProcessVideoJob,
+    logContext: Record<string, unknown>,
+  ): Promise<boolean> {
+    const current = await this.database.video.findUnique({
+      where: { id: videoId },
+      select: { status: true, processingGeneration: true },
+    });
+    if (!current) {
+      this.logger.log({
+        event: 'video.processing.cancelled',
+        ...logContext,
+        reason: 'video_deleted',
+      });
+      return true;
+    }
+    if (current.processingGeneration !== input.generation) {
+      this.logger.log({
+        event: 'video.processing.stale_job_skipped',
+        ...logContext,
+        currentGeneration: current.processingGeneration,
+      });
+      return true;
+    }
+    if (current.status !== 'UPLOADED' && current.status !== 'PROCESSING') {
+      this.logger.log({
+        event:
+          current.status === 'DELETING'
+            ? 'video.processing.cancelled'
+            : 'video.processing.duplicate_skipped',
+        ...logContext,
+        reason: current.status,
+      });
+      return true;
+    }
+    this.logger.warn({
+      event: 'video.processing.attempt_busy',
+      ...logContext,
+    });
+    return false;
+  }
+
+  /**
+   * Decides what a failed execution means once its own error is known:
+   * - 'abandoned': the video was deleted, superseded by a newer generation, or
+   *   is being deleted; this is a cancellation, not a failure.
+   * - 'committed': the READY transaction committed even though the call failed.
+   * - otherwise the error to surface (ownership loss when another attempt owns
+   *   or already published the generation).
+   */
+  private async classifyFailure(
+    attempt: AttemptRef,
+    error: unknown,
+    logContext: Record<string, unknown>,
+  ): Promise<unknown> {
+    let current;
+    try {
+      current = await this.database.video.findUnique({
+        where: { id: attempt.videoId },
+        select: {
+          status: true,
+          processingGeneration: true,
+          processingAttemptId: true,
+          committedAttemptId: true,
+        },
+      });
+    } catch {
+      return error;
+    }
+    if (current?.committedAttemptId === attempt.attemptId) return 'committed';
+    if (
+      !current ||
+      current.status === 'DELETING' ||
+      current.processingGeneration !== attempt.generation
+    ) {
+      this.logger.log({
+        event:
+          current && current.processingGeneration !== attempt.generation
+            ? 'video.processing.stale_job_skipped'
+            : 'video.processing.cancelled',
+        ...logContext,
+        currentGeneration: current?.processingGeneration,
+        reason: current?.status ?? 'deleted',
+      });
+      return 'abandoned';
+    }
+    const ownsStill =
+      current.status === 'PROCESSING' &&
+      current.processingAttemptId === attempt.attemptId;
+    if (ownsStill && !(error instanceof AttemptOwnershipLostError))
+      return error;
+    this.logger.warn({
+      event: 'video.processing.ownership_lost',
+      ...logContext,
+      currentStatus: current.status,
+    });
+    return error instanceof AttemptOwnershipLostError
+      ? error
+      : new AttemptOwnershipLostError();
+  }
+
+  /**
+   * Removes this attempt's objects unless the database says this attempt is the
+   * committed one. If the state cannot be read, nothing is deleted: an orphan is
+   * recoverable, a deleted published rendition is not.
+   */
+  private async cleanupUnpublished(attempt: AttemptRef): Promise<void> {
+    try {
+      const current = await this.database.video.findUnique({
+        where: { id: attempt.videoId },
+        select: { committedAttemptId: true },
+      });
+      if (current?.committedAttemptId === attempt.attemptId) return;
+      await this.storage.removeAttempt(
+        attempt.videoId,
+        attempt.generation,
+        attempt.attemptId,
+      );
+    } catch (error) {
+      this.logger.warn({
+        event: 'video.processing.cleanup_failed',
+        videoId: attempt.videoId,
+        generation: attempt.generation,
+        attemptId: attempt.attemptId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async removeObsolete(
+    attempt: AttemptRef,
+    logContext: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.storage.removeObsoleteGenerated(
+        attempt.videoId,
+        attempt.generation,
+        attempt.attemptId,
+      );
+    } catch (error) {
+      this.logger.warn({
+        event: 'video.processing.cleanup_failed',
+        ...logContext,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }

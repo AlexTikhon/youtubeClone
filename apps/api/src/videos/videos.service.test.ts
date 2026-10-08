@@ -389,3 +389,131 @@ describe('VideosService deletion barrier', () => {
     expect(prisma.video.delete).not.toHaveBeenCalled();
   });
 });
+
+describe('VideosService committed attempt asset selection', () => {
+  const manifestFor = (attemptId: string | null) => ({
+    id: `manifest-${attemptId ?? 'legacy'}`,
+    attemptId,
+    objectKey: attemptId
+      ? `videos/${privateVideo.id}/generations/1/attempts/${attemptId}/hls/${attemptId === 'attempt-b' ? 'master.m3u8' : '720p/index.m3u8'}`
+      : `videos/${privateVideo.id}/hls/720p/index.m3u8`,
+  });
+
+  it('plays the committed attempt even when another attempt left a manifest row', async () => {
+    const prisma = {
+      video: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...privateVideo,
+          committedAttemptId: 'attempt-b',
+          assets: [manifestFor('attempt-a'), manifestFor('attempt-b')],
+        }),
+      },
+      subscription: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const service = new VideosService(
+      prisma as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.getWatch(privateVideo.id, 'owner-id'),
+    ).resolves.toMatchObject({
+      playbackUrl: `/api/v1/media/videos/${privateVideo.id}/hls/master.m3u8`,
+    });
+    await expect(
+      service.getWatch(privateVideo.id, 'owner-id'),
+    ).resolves.not.toMatchObject({
+      playbackUrl: expect.stringContaining('720p/index.m3u8'),
+    });
+  });
+
+  it('treats a video without a committed attempt as legacy media', async () => {
+    const prisma = {
+      video: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...privateVideo,
+          committedAttemptId: null,
+          assets: [manifestFor('attempt-a'), manifestFor(null)],
+        }),
+      },
+      subscription: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const service = new VideosService(
+      prisma as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.getWatch(privateVideo.id, 'owner-id'),
+    ).resolves.toMatchObject({
+      playbackUrl: `/api/v1/media/videos/${privateVideo.id}/hls/720p/index.m3u8`,
+    });
+  });
+
+  it('has no playable media when only an uncommitted attempt left rows', async () => {
+    const prisma = {
+      video: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...privateVideo,
+          committedAttemptId: 'attempt-b',
+          assets: [manifestFor('attempt-a')],
+        }),
+      },
+      subscription: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const service = new VideosService(
+      prisma as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.getWatch(privateVideo.id, 'owner-id'),
+    ).rejects.toMatchObject({ code: 'VIDEO_NOT_FOUND' });
+  });
+
+  it.each([
+    ['attempt-b', 'attempt-b'],
+    [null, null],
+  ] as const)(
+    'resolves served media only from committed attempt %s',
+    async (committedAttemptId, expectedAttemptId) => {
+      const prisma = {
+        video: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: privateVideo.id,
+            status: 'READY',
+            visibility: 'PUBLIC',
+            durationSeconds: 30,
+            committedAttemptId,
+            channel: { ownerId: 'owner-id' },
+          }),
+        },
+        videoAsset: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValue({ bucket: 'streams', objectKey: 'key' }),
+        },
+      };
+      const service = new VideosService(
+        prisma as never,
+        {} as never,
+        {} as never,
+      );
+
+      await service.resolveMediaAsset(privateVideo.id, undefined, 'THUMBNAIL');
+
+      expect(prisma.videoAsset.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            videoId: privateVideo.id,
+            kind: 'THUMBNAIL',
+            attemptId: expectedAttemptId,
+          },
+        }),
+      );
+    },
+  );
+});

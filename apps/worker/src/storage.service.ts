@@ -18,6 +18,19 @@ import type { OnApplicationShutdown } from '@nestjs/common';
 import { workerEnvironment } from './config.js';
 import { ProcessingError } from './processing-error.js';
 
+/**
+ * Every processing attempt writes under its own prefix. Overlapping attempts in
+ * one generation therefore never share keys, and cleanup of a losing attempt
+ * cannot reach published media.
+ */
+export function attemptPrefix(
+  videoId: string,
+  generation: number,
+  attemptId: string,
+): string {
+  return `videos/${videoId}/generations/${generation}/attempts/${attemptId}/`;
+}
+
 @Injectable()
 export class StorageService implements OnApplicationShutdown {
   private readonly logger = new Logger(StorageService.name);
@@ -82,10 +95,11 @@ export class StorageService implements OnApplicationShutdown {
   async uploadThumbnail(
     videoId: string,
     generation: number,
+    attemptId: string,
     sourcePath: string,
   ): Promise<{ bucket: string; objectKey: string; sizeBytes: bigint }> {
     const bucket = workerEnvironment.S3_BUCKET_THUMBNAILS;
-    const objectKey = `videos/${videoId}/generations/${generation}/thumbnail/thumbnail.jpg`;
+    const objectKey = `${attemptPrefix(videoId, generation, attemptId)}thumbnail/thumbnail.jpg`;
     const sizeBytes = await this.uploadFile(
       bucket,
       objectKey,
@@ -98,6 +112,7 @@ export class StorageService implements OnApplicationShutdown {
   async uploadHls(
     videoId: string,
     generation: number,
+    attemptId: string,
     sourceDirectory: string,
     renditionNames: readonly string[],
   ): Promise<{
@@ -113,7 +128,7 @@ export class StorageService implements OnApplicationShutdown {
     }>;
   }> {
     const bucket = workerEnvironment.S3_BUCKET_STREAMS;
-    const storagePrefix = `videos/${videoId}/generations/${generation}/hls/`;
+    const storagePrefix = `${attemptPrefix(videoId, generation, attemptId)}hls/`;
     const rootFiles = await readdir(sourceDirectory);
     if (
       !rootFiles.includes('master.m3u8') ||
@@ -190,37 +205,45 @@ export class StorageService implements OnApplicationShutdown {
     }
   }
 
-  async removeGenerated(videoId: string, generation: number): Promise<void> {
+  /** Removes one attempt's objects. Never touches any other attempt's prefix. */
+  async removeAttempt(
+    videoId: string,
+    generation: number,
+    attemptId: string,
+  ): Promise<void> {
+    const prefix = attemptPrefix(videoId, generation, attemptId);
     await Promise.all([
-      this.deletePrefix(
-        workerEnvironment.S3_BUCKET_STREAMS,
-        `videos/${videoId}/generations/${generation}/`,
-      ),
-      this.deletePrefix(
-        workerEnvironment.S3_BUCKET_THUMBNAILS,
-        `videos/${videoId}/generations/${generation}/`,
-      ),
+      this.deletePrefix(workerEnvironment.S3_BUCKET_STREAMS, prefix),
+      this.deletePrefix(workerEnvironment.S3_BUCKET_THUMBNAILS, prefix),
     ]);
   }
 
+  /**
+   * After an attempt commits, removes every other generated object for the
+   * video: legacy layouts, earlier generations, and losing attempts.
+   */
   async removeObsoleteGenerated(
     videoId: string,
-    currentGeneration: number,
+    committedGeneration: number,
+    committedAttemptId: string,
   ): Promise<void> {
-    const operations: Promise<void>[] = [
+    const keep = attemptPrefix(
+      videoId,
+      committedGeneration,
+      committedAttemptId,
+    );
+    await Promise.all([
       this.deletePrefix(
         workerEnvironment.S3_BUCKET_STREAMS,
-        `videos/${videoId}/hls/`,
+        `videos/${videoId}/`,
+        keep,
       ),
       this.deletePrefix(
         workerEnvironment.S3_BUCKET_THUMBNAILS,
-        `videos/${videoId}/thumbnail/`,
+        `videos/${videoId}/`,
+        keep,
       ),
-    ];
-    for (let generation = 1; generation < currentGeneration; generation += 1) {
-      operations.push(this.removeGenerated(videoId, generation));
-    }
-    await Promise.all(operations);
+    ]);
   }
 
   private async uploadFile(
@@ -242,7 +265,11 @@ export class StorageService implements OnApplicationShutdown {
     return BigInt(file.size);
   }
 
-  private async deletePrefix(bucket: string, prefix: string): Promise<void> {
+  private async deletePrefix(
+    bucket: string,
+    prefix: string,
+    keepPrefix?: string,
+  ): Promise<void> {
     let continuationToken: string | undefined;
     do {
       const page = await this.client.send(
@@ -254,7 +281,9 @@ export class StorageService implements OnApplicationShutdown {
       );
       const objects =
         page.Contents?.flatMap((object) =>
-          object.Key ? [{ Key: object.Key }] : [],
+          object.Key && !(keepPrefix && object.Key.startsWith(keepPrefix))
+            ? [{ Key: object.Key }]
+            : [],
         ) ?? [];
       if (objects.length > 0) {
         const result = await this.client.send(

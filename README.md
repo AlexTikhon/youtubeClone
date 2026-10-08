@@ -14,7 +14,7 @@ to targeted bug fixes and small experiments, not another product-feature phase.
 ```text
 Browser -- Next.js UI -- REST/session cookie --> NestJS modular monolith --> PostgreSQL
    |                                                |                 |
-   +-- signed PUT --------------------------------> MinIO             +--> Redis/BullMQ
+   +-- presigned POST policy ---------------------> MinIO             +--> Redis/BullMQ
    |                                                                      |
    +<-- authorized thumbnail/HLS routes <---------- MinIO <--- FFmpeg worker
 ```
@@ -79,8 +79,8 @@ broken video on discovery surfaces. Use the upload flow (or the media E2E) to de
 ```bash
 pnpm verify               # format, lint, typecheck, unit tests, build
 pnpm verify:full          # verify + API integration + fast browser E2E
-pnpm test:integration     # requires PostgreSQL and Redis
-pnpm test:integration:media # requires FFmpeg/ffprobe; real ABR generation
+pnpm test:integration     # requires PostgreSQL, Redis, and MinIO (use disposable services; no worker running)
+pnpm test:integration:media # worker suites: attempt ownership + real ABR generation (needs FFmpeg/ffprobe)
 pnpm test:e2e             # fast seeded browser workflow
 pnpm test:e2e:media       # opt-in real upload/FFmpeg/MinIO/HLS workflow
 pnpm format:check

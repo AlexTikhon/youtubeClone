@@ -32,10 +32,15 @@ export function HlsVideoPlayer({
 }: PlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const callbacks = useRef({ onProgress, onPlay, onPause, onEnded });
+  // Resume metadata is read when a source attaches, never as an effect
+  // dependency: a watch-detail refetch must not rebuild active playback.
+  const initialPosition = useRef(initialPositionSeconds);
+  const lastPosition = useRef<{ source: string; seconds: number } | null>(null);
   const [playerState, setPlayerState] = useState<PlayerState>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   callbacks.current = { onProgress, onPlay, onPause, onEnded };
+  initialPosition.current = initialPositionSeconds;
 
   useEffect(() => {
     const video = videoRef.current;
@@ -44,6 +49,14 @@ export function HlsVideoPlayer({
     let disposed = false;
     let destroyHls: (() => void) | undefined;
     const source = resolveApiUrl(playbackUrl);
+    // A retry of the same source resumes where playback got to; a new source
+    // (or a first attach) starts from its own saved resume position.
+    const remembered =
+      lastPosition.current?.source === source
+        ? lastPosition.current.seconds
+        : 0;
+    const resumeAt = remembered > 0 ? remembered : initialPosition.current;
+    let resumeApplied = false;
     setPlayerState('loading');
     setErrorMessage(null);
 
@@ -52,17 +65,19 @@ export function HlsVideoPlayer({
       durationSeconds: Number.isFinite(video.duration) ? video.duration : 0,
     });
     const loaded = () => {
-      if (
-        initialPositionSeconds &&
-        initialPositionSeconds < video.duration - 1
-      ) {
-        video.currentTime = initialPositionSeconds;
+      if (resumeApplied) return;
+      resumeApplied = true;
+      if (resumeAt && resumeAt < video.duration - 1) {
+        video.currentTime = resumeAt;
       }
     };
     const canPlay = () => setPlayerState('ready');
     const waiting = () =>
       setPlayerState((state) => (state === 'error' ? state : 'loading'));
-    const time = () => callbacks.current.onProgress?.(progress());
+    const time = () => {
+      lastPosition.current = { source, seconds: video.currentTime };
+      callbacks.current.onProgress?.(progress());
+    };
     const play = () => {
       setPlayerState('playing');
       callbacks.current.onPlay?.();
@@ -167,7 +182,7 @@ export function HlsVideoPlayer({
       video.removeAttribute('src');
       video.load();
     };
-  }, [initialPositionSeconds, playbackUrl, retryGeneration]);
+  }, [playbackUrl, retryGeneration]);
 
   return (
     <div

@@ -215,10 +215,30 @@ export interface AuthenticatedUserResponse {
   };
 }
 
+/**
+ * A direct-to-storage form upload. Send `fields` as multipart form fields, in
+ * order, followed by the file as the final `file` field. Object storage
+ * rejects any other key, content type, or byte count.
+ */
 export interface UploadIntentResponse {
+  method: 'POST';
   uploadUrl: string;
+  fields: Record<string, string>;
+  /** The exact byte length storage will admit for this intent. */
+  sizeBytes: number;
   expiresInSeconds: number;
-  requiredHeaders: Record<string, string>;
+}
+
+/**
+ * Outcome of finalizing an upload. Completion is idempotent: replaying it for an
+ * upload that was already accepted returns the video's current lifecycle state
+ * with `alreadyCompleted: true` instead of an error.
+ */
+export interface UploadCompletionResponse {
+  videoId: string;
+  status: 'UPLOADED' | 'PROCESSING' | 'READY' | 'FAILED';
+  processingGeneration: number;
+  alreadyCompleted: boolean;
 }
 
 export interface CursorPage<T> {

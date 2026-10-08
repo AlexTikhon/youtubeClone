@@ -52,17 +52,21 @@ export class ProcessingOutboxPublisher
 
   async cleanupPublished(now = new Date()): Promise<void> {
     try {
-      const result = await this.prisma.processingOutbox.deleteMany({
-        where: {
-          publishedAt: {
-            lt: new Date(now.getTime() - PUBLISHED_RETENTION_MS),
-          },
-        },
-      });
-      if (result.count > 0) {
+      // Evidence for a generation that is still UPLOADED/PROCESSING is never
+      // expired: reconciliation needs it to recover or fail that generation.
+      const deleted = await this.prisma.$executeRaw`
+        DELETE FROM "ProcessingOutbox" AS outbox
+        WHERE outbox."publishedAt" < ${new Date(now.getTime() - PUBLISHED_RETENTION_MS)}
+          AND NOT EXISTS (
+            SELECT 1 FROM "Video" AS video
+            WHERE video."id" = outbox."videoId"
+              AND video."processingGeneration" = outbox."generation"
+              AND video."status" IN ('UPLOADED', 'PROCESSING')
+          )`;
+      if (deleted > 0) {
         this.logger.log({
           event: 'video.processing.outbox_cleaned',
-          deletedCount: result.count,
+          deletedCount: deleted,
         });
       }
     } catch (error) {

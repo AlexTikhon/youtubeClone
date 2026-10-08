@@ -141,10 +141,22 @@ describe('real failed-processing recovery', () => {
         'THUMBNAIL',
       ]);
       expect(
-        generated.every((asset) => asset.objectKey.includes(`/generations/2/`)),
+        generated.every(
+          (asset) =>
+            asset.objectKey.includes(`/generations/2/attempts/`) &&
+            asset.attemptId === completed.committedAttemptId,
+        ),
       ).toBe(true);
+      expect(completed.committedAttemptId).toBeTruthy();
     } finally {
-      if (videoId) await storage.removeGenerated(videoId, 2);
+      if (videoId) {
+        const finished = await prisma.video.findUnique({
+          where: { id: videoId },
+          select: { committedAttemptId: true },
+        });
+        if (finished?.committedAttemptId)
+          await storage.removeAttempt(videoId, 2, finished.committedAttemptId);
+      }
       if (userId) await prisma.user.deleteMany({ where: { id: userId } });
       await s3
         .send(

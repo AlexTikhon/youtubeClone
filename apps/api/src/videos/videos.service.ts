@@ -36,7 +36,7 @@ const OWNER_INCLUDE = {
   channel: { select: { name: true, handle: true } },
   assets: {
     where: { kind: { in: ['THUMBNAIL', 'HLS_MANIFEST'] } },
-    select: { kind: true, objectKey: true },
+    select: { kind: true, objectKey: true, attemptId: true },
   },
   _count: { select: { views: true, likes: true, comments: true } },
 } satisfies Prisma.VideoInclude;
@@ -198,6 +198,8 @@ export class VideosService {
           processingGeneration: generation,
           processingStartedAt: null,
           processingFinishedAt: null,
+          processingAttemptId: null,
+          processingLeaseExpiresAt: null,
           failureReason: null,
         },
       });
@@ -269,7 +271,7 @@ export class VideosService {
         channel: { include: { _count: { select: { subscriptions: true } } } },
         assets: {
           where: { kind: 'HLS_MANIFEST' },
-          select: { id: true, objectKey: true },
+          select: { id: true, objectKey: true, attemptId: true },
         },
         _count: { select: { likes: true, views: true, comments: true } },
         ...(userId
@@ -283,6 +285,9 @@ export class VideosService {
           : {}),
       },
     });
+    const assets = video
+      ? committedAssets(video.assets, video.committedAttemptId)
+      : [];
     const owned = video?.channel.ownerId === userId;
     const visible =
       video?.status === 'READY' &&
@@ -292,7 +297,7 @@ export class VideosService {
     if (
       !video ||
       !visible ||
-      video.assets.length === 0 ||
+      assets.length === 0 ||
       video.durationSeconds === null
     )
       throw new AppError('VIDEO_NOT_FOUND', 'Video was not found', 404);
@@ -315,7 +320,7 @@ export class VideosService {
       visibility: video.visibility,
       description: video.description,
       durationSeconds: video.durationSeconds,
-      playbackUrl: playbackUrlForManifest(video.id, video.assets[0]!.objectKey),
+      playbackUrl: playbackUrlForManifest(video.id, assets[0]!.objectKey),
       publishedAt: video.publishedAt?.toISOString() ?? null,
       viewsCount: video._count.views,
       likesCount: video._count.likes,
@@ -495,6 +500,7 @@ export class VideosService {
         status: true,
         visibility: true,
         durationSeconds: true,
+        committedAttemptId: true,
         channel: { select: { ownerId: true } },
       },
     });
@@ -518,8 +524,10 @@ export class VideosService {
     kind: 'THUMBNAIL' | 'HLS_MANIFEST',
   ) {
     const access = await this.assertMediaAccess(videoId, ownerId);
+    // Only the committed attempt's rows are authoritative; legacy videos have a
+    // null committed attempt and null-attempt assets.
     const asset = await this.prisma.videoAsset.findFirst({
-      where: { videoId, kind },
+      where: { videoId, kind, attemptId: access.committedAttemptId ?? null },
       select: { bucket: true, objectKey: true },
     });
     if (!asset)
@@ -528,6 +536,7 @@ export class VideosService {
   }
 
   private toOwnerDto(video: OwnerVideoRecord): OwnerVideoDto {
+    const assets = committedAssets(video.assets, video.committedAttemptId);
     return {
       id: video.id,
       title: video.title,
@@ -543,17 +552,17 @@ export class VideosService {
       processingFinishedAt: video.processingFinishedAt?.toISOString() ?? null,
       updatedAt: video.updatedAt.toISOString(),
       channel: video.channel,
-      thumbnailUrl: video.assets.some(
+      thumbnailUrl: assets.some(
         (asset: { kind: string }) => asset.kind === 'THUMBNAIL',
       )
         ? `/api/v1/media/videos/${video.id}/thumbnail`
         : null,
-      playbackUrl: video.assets.some(
+      playbackUrl: assets.some(
         (asset: { kind: string }) => asset.kind === 'HLS_MANIFEST',
       )
         ? playbackUrlForManifest(
             video.id,
-            video.assets.find(
+            assets.find(
               (asset: { kind: string }) => asset.kind === 'HLS_MANIFEST',
             )!.objectKey,
           )
@@ -579,6 +588,18 @@ export class VideosService {
       publishedAt: video.publishedAt.toISOString(),
     };
   }
+}
+
+/**
+ * Generated assets are authoritative only for the attempt that committed READY.
+ * Legacy videos predate attempts: both identities are null.
+ */
+function committedAssets<T extends { attemptId?: string | null }>(
+  assets: T[],
+  committedAttemptId: string | null | undefined,
+): T[] {
+  const committed = committedAttemptId ?? null;
+  return assets.filter((asset) => (asset.attemptId ?? null) === committed);
 }
 
 function playbackUrlForManifest(videoId: string, objectKey: string): string {

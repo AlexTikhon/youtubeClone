@@ -90,6 +90,21 @@ fatal media recovery is bounded at one attempt. Unsupported, initialization, nat
 exhausted HLS failures show a retry action. Cleanup removes listeners, destroys HLS, clears `src`,
 and reloads the media element.
 
+The attachment lifetime depends only on the playback URL and an explicit retry counter. The saved
+resume position is read once per attachment (through a ref) and applied on `loadedmetadata`, so a
+watch-detail refetch — after a subscription, a counted view, or a history save — never reloads,
+destroys, or seeks active playback. A new source starts at its own saved position; **Retry playback**
+resumes at the position the player had reached.
+
+## Upload recovery
+
+The upload form posts the presigned form fields (signed fields first, file last) straight to object
+storage with progress and cancellation. Recovery is deliberately three separate states: **upload
+failed** (Retry upload re-signs and re-sends), **completion uncertain** (a lost response or 5xx; the
+form reads the owner's view of the video first and offers Retry finalization without re-sending bytes,
+or keeps observing processing if the server already accepted it), and **processing failed** (Retry
+processing). The pure decision rules live in `video-upload/upload-recovery.ts`.
+
 Progress events update local watch state, but history persistence is limited to twelve-second
 intervals and de-duplicates near-identical positions. Pause/end save meaningful changes; page hide
 and hidden visibility flush with `keepalive`. Qualified-view behavior remains based on actual
