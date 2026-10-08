@@ -118,7 +118,11 @@ describe('VideoProcessingPipeline deletion barrier', () => {
   it('abandons the attempt and removes only its own output when deletion wins at commit', async () => {
     const transaction = {
       videoAsset: { update: vi.fn(), create: vi.fn(), deleteMany: vi.fn() },
-      video: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      video: { updateMany: vi.fn() },
+      $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      // The fenced READY update matches nothing: deletion won.
+      $executeRaw: vi.fn().mockResolvedValue(0),
     };
     const database = {
       video: {
@@ -154,23 +158,18 @@ describe('VideoProcessingPipeline deletion barrier', () => {
       expect.any(String),
       expect.any(String),
       ['360p'],
+      expect.any(AbortSignal),
     );
     expect(storage.removeAttempt).toHaveBeenCalledOnce();
+    // Cleanup runs under its own bounded signal, not the cancelled attempt's.
     expect(storage.removeAttempt).toHaveBeenCalledWith(
       'video-id',
       1,
       storage.uploadHls.mock.calls[0]![2],
+      expect.any(AbortSignal),
     );
-    expect(transaction.video.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          id: 'video-id',
-          status: 'PROCESSING',
-          processingGeneration: 1,
-          processingAttemptId: storage.uploadHls.mock.calls[0]![2],
-        },
-      }),
-    );
+    expect(transaction.$executeRaw).toHaveBeenCalledOnce();
+    expect(transaction.video.updateMany).not.toHaveBeenCalled();
     expect(transaction.videoAsset.create).not.toHaveBeenCalled();
     expect(storage.removeObsoleteGenerated).not.toHaveBeenCalled();
   });
@@ -336,6 +335,7 @@ describe('VideoProcessingPipeline attempt ownership', () => {
       'video-id',
       1,
       'attempt-id',
+      expect.any(AbortSignal),
     );
   });
 });

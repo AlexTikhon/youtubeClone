@@ -104,12 +104,16 @@ services:
       MAX_VIDEO_DURATION_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-7200}
       WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-60}
       WORKER_ATTEMPT_MAX_SECONDS: ${WORKER_ATTEMPT_MAX_SECONDS:-10800}
+      WORKER_CLEANUP_TIMEOUT_SECONDS: ${WORKER_CLEANUP_TIMEOUT_SECONDS:-20}
+      WORKER_SHUTDOWN_GRACE_SECONDS: ${WORKER_SHUTDOWN_GRACE_SECONDS:-15}
     healthcheck:
       test:
         ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:4001/health/ready']
       interval: 10s
       timeout: 5s
       retries: 5
+    # Shutdown grace (15s) + cleanup bound (20s) + margin, so cancelled attempts can settle.
+    stop_grace_period: 60s
     restart: unless-stopped
 
 volumes:

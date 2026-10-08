@@ -53,7 +53,9 @@ first file in each section; open the others for the deeper invariant or client b
 - `apps/worker/src/video-worker.service.ts` — BullMQ consumer, attempt semantics, logs, discard/fail.
 - `apps/worker/src/video-processing.pipeline.ts` — lease acquisition, ownership checks,
   probe/transcode/upload, fenced READY transaction, fenced failure, and scoped cleanup.
-- `apps/worker/src/processing-lease.ts` — atomic acquire/takeover, conditional renewal, heartbeat.
+- `apps/worker/src/processing-lease.ts` — atomic acquire/takeover, expiry-aware renewal, the
+  per-attempt cancellation lifecycle (`AttemptLease`), and the lock-first conditional READY publication.
+- `apps/worker/src/run-process.ts` — cancellable child-process runner (terminate, escalate, reap).
 - `apps/worker/src/media-tools.service.ts` — ffprobe and FFmpeg command construction and timeouts.
 - `apps/worker/src/processing-error.ts` — retryable versus terminal processing errors.
 - `apps/worker/src/config.ts` — validated worker environment.
@@ -75,6 +77,12 @@ first file in each section; open the others for the deeper invariant or client b
   layout and attempt-scoped cleanup.
 - `apps/worker/test/attempt-ownership.integration.test.ts` — overlapping attempts, late fail,
   lease takeover, and deletion against real PostgreSQL and MinIO.
+- `apps/worker/test/lease-expiry.integration.test.ts`, `attempt-cancellation.integration.test.ts`,
+  `worker-lifecycle.integration.test.ts` — lease expiry, READY under row-lock waits, deadline and
+  ownership-loss cancellation, setup failure, worker-slot release, and bounded shutdown against real
+  PostgreSQL, MinIO, and BullMQ/Redis.
+- `apps/worker/src/storage.cancellation.test.ts`, `run-process.test.ts` — real sockets, streams, and
+  child processes torn down by abort.
 - `apps/api/test/processing-reconciliation.integration.test.ts` — missing, failed, and stranded
   jobs, live leases, and concurrent reconciliation against real PostgreSQL and Redis.
 - `apps/api/test/processing-retry.integration.test.ts` — exactly one concurrent retry and durable

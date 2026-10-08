@@ -57,7 +57,7 @@ MinIO ORIGINAL -> local original -> ffprobe
                                   +-> hls/master.m3u8
                                   -> verify lease, upload generated assets
                                   -> verify lease, short fenced metadata/assets/READY transaction
-                                  -> remove temporary directory in finally
+                                  -> stop heartbeat, bounded cleanup, remove temporary directory in finally
 ```
 
 ffprobe must report a positive duration and a usable video stream. Stored metadata includes source
@@ -120,16 +120,23 @@ up a retried job). Ownership is therefore enforced in PostgreSQL:
   uses the database clock, so skewed worker hosts cannot steal a live lease. A worker that finds a
   live lease fails with a retryable `AttemptBusyError` and never fails the video on the owner's
   behalf.
-- **Renewal.** A heartbeat renews the lease with a conditional `UPDATE` (the attempt must still
-  match). Before uploading and before committing, the worker performs a verified renewal, which
-  doubles as an ownership check. A former owner's renewal reports "lost" and the execution stops with
-  a non-retryable `AttemptOwnershipLostError`. Renewal stops after `WORKER_ATTEMPT_MAX_SECONDS`
-  (default 3 hours) so a wedged attempt becomes recoverable; `WORKER_LEASE_SECONDS` (default 60) sets
-  the lease length. FFmpeg and uploads never run inside a database transaction.
-- **Fenced publication.** The READY transition is the first statement of a short transaction and is
-  fenced by status, generation, **and** attempt ID. In the same transaction it stores
-  `committedAttemptId`, clears the lease, and publishes the asset rows. If the compare-and-set loses,
-  the transaction rolls back and nothing is published.
+- **Renewal.** A heartbeat renews the lease with a conditional `UPDATE` that requires the attempt to
+  still match **and the lease to be unexpired** by the database clock. An expired lease is never
+  resurrected, even when no other attempt took over: after expiry the generation belongs to whoever
+  acquires it next. Renewals are serialized (one at a time, queued behind each other), and none starts
+  after the attempt finished. Before uploading and before committing, the worker performs a verified
+  renewal, which doubles as an ownership check. `WORKER_LEASE_SECONDS` (default 60) sets the lease
+  length. FFmpeg and uploads never run inside a database transaction.
+- **Fenced publication.** The READY transition is one conditional `UPDATE` at the start of a short
+  transaction, fenced by status, generation, attempt ID, **and an unexpired lease**; there is no
+  separate pre-check to race. The transaction first takes the video row lock, then evaluates the
+  condition with `clock_timestamp()` (not `now()`, which is frozen at transaction start), so a wait
+  behind another writer is measured at evaluation time and a lease that ran out while waiting is
+  refused. `lock_timeout` (5 s), `statement_timeout` (10 s), and explicit Prisma transaction limits
+  bound the wait. In the same transaction it stores `committedAttemptId`, clears the lease, and
+  publishes the asset rows. If the compare-and-set loses, the transaction rolls back and nothing is
+  published. A refusal caused by an expired lease with no competing owner is reported as a retryable
+  `AttemptLeaseExpiredError` (released and retried), not as ownership loss.
 - **Fenced failure.** `fail()` moves to FAILED only for the owning attempt and deletes storage
   _after_ that update succeeds, and then only the failing attempt's own prefix. A late failure from a
   superseded attempt, or after READY, changes nothing and deletes nothing.
@@ -137,6 +144,37 @@ up a retried job). Ownership is therefore enforced in PostgreSQL:
   objects, and only after confirming the database does not record it as committed. If that state
   cannot be read, nothing is deleted: an orphan is recoverable, a deleted rendition is not. After a
   successful commit the winner sweeps legacy layouts, earlier generations, and losing attempts.
+
+- **One cancellation lifecycle per attempt.** Each attempt has one `AbortSignal` (`AttemptLease.signal`)
+  that aborts, with a typed reason, at the first of: the hard deadline
+  (`WORKER_ATTEMPT_MAX_SECONDS`, default 3 hours, `AttemptDeadlineError`, retryable); a renewal
+  proving ownership is lost (`AttemptOwnershipLostError`, non-retryable); no renewal confirmed for a
+  whole lease length, for example because the database is unreachable (`AttemptLeaseExpiredError`,
+  retryable), measured on a monotonic clock from the last request that was confirmed, so renewal
+  errors cannot let work run past confirmed validity; and worker shutdown (`WorkerShutdownError`,
+  retryable). The signal reaches every long operation: S3 requests use the SDK's `abortSignal`,
+  downloads run through `stream.pipeline` with the signal, upload source streams are destroyed in
+  `finally`, and ffprobe/ffmpeg children are sent SIGTERM, escalated to SIGKILL after a short grace,
+  and awaited until the operating system reports them gone (`run-process.ts`). The execution
+  therefore settles, which frees its BullMQ concurrency slot, instead of a race that abandons running
+  work.
+  Limitation: database statements have no cancellation of their own. Lease renewals stop being awaited
+  when the signal aborts, and the publication transaction is bounded by its lock, statement, and
+  transaction timeouts, but other Prisma calls rely on the driver and pool timeouts.
+- **Setup and teardown.** Everything after ownership acquisition, including `mkdtemp`, is inside one
+  `try/finally`: a setup failure stops the heartbeat, removes what exists, and surfaces an
+  attempt-tagged error so the worker service releases (retryable) or fails (terminal) the attempt.
+- **Bounded cleanup.** Removing an attempt's objects runs under its own timeout
+  (`WORKER_CLEANUP_TIMEOUT_SECONDS`, default 20), not the cancelled attempt signal, so a hung storage
+  endpoint cannot hold the slot during cleanup either. Cancellation caused by lost ownership never
+  fails another attempt (the failure update is attempt-fenced) and never deletes committed output
+  (cleanup re-checks `committedAttemptId` and only touches the attempt's own prefix).
+- **Shutdown.** On shutdown the worker stops taking jobs, lets running attempts finish for
+  `WORKER_SHUTDOWN_GRACE_SECONDS` (default 15), then cancels them and waits up to the cleanup bound
+  plus 5 s for them to settle; cancelled attempts release their lease for immediate retry elsewhere.
+  Work that still ignores cancellation is abandoned and the BullMQ worker is force-closed, so shutdown
+  time is bounded; the abandoned attempt's lease expires and the generation is recovered normally.
+  A shutdown-cancelled run counts as one BullMQ attempt.
 
 Network/storage/database failures are retryable; invalid probe output, unavailable media executables,
 and deterministic FFmpeg failures are non-retryable. A retryable failure releases the lease so the next

@@ -4,8 +4,10 @@ import { Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 
 import {
+  AttemptDeadlineError,
+  AttemptLeaseExpiredError,
   AttemptOwnershipLostError,
-  ProcessingError,
+  WorkerShutdownError,
 } from './processing-error.js';
 
 /**
@@ -54,7 +56,14 @@ export async function acquireAttempt(
   return acquired === 1 ? attemptId : null;
 }
 
-/** Extends the lease only while this attempt is still the recorded owner. */
+/**
+ * Extends the lease only while this attempt is still the recorded owner AND the
+ * lease has not expired. An expired lease is never resurrected, even when no
+ * other attempt took over: after expiry the generation belongs to whoever
+ * acquires it next. Expiry is judged with `clock_timestamp()` so a statement
+ * that waited on a row lock is measured at evaluation time, not statement
+ * start.
+ */
 export async function renewAttempt(
   database: LeaseDatabase,
   attempt: AttemptRef,
@@ -68,7 +77,8 @@ export async function renewAttempt(
     WHERE "id" = ${attempt.videoId}::uuid
       AND "processingGeneration" = ${attempt.generation}::int
       AND "processingAttemptId" = ${attempt.attemptId}::uuid
-      AND "status" = 'PROCESSING'`;
+      AND "status" = 'PROCESSING'
+      AND "processingLeaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')`;
   return renewed === 1;
 }
 
@@ -118,92 +128,258 @@ export async function failStrandedGeneration(
   return failed === 1;
 }
 
-export interface AttemptLeaseOptions {
-  leaseSeconds: number;
-  renewIntervalMs: number;
-  /** After this, the attempt stops renewing and becomes recoverable. */
-  maxDurationMs: number;
+/** The publication runs in a short transaction; no wait inside it is unbounded. */
+const PUBLISH_LOCK_TIMEOUT_MS = 5_000;
+const PUBLISH_STATEMENT_TIMEOUT_MS = 10_000;
+export const PUBLISH_TRANSACTION_OPTIONS = {
+  maxWait: 5_000,
+  timeout: 20_000,
+} as const;
+
+export type PublicationTransaction = Pick<
+  PrismaClient,
+  '$executeRaw' | '$executeRawUnsafe' | '$queryRaw'
+>;
+
+/**
+ * First statements of the READY transaction. It succeeds only for the attempt
+ * that is still the recorded owner of an unexpired lease, and the ownership
+ * and expiry condition is part of the one UPDATE that publishes, so there is
+ * no separate check to race.
+ *
+ * The row lock is taken first and held until commit. The condition is then
+ * evaluated after any lock wait, with `clock_timestamp()` rather than `now()`
+ * (which is frozen at transaction start). Without that, a wait behind another
+ * writer could let the lease expire between evaluating the condition and
+ * applying the update. Once the UPDATE has run, any competing takeover blocks
+ * on this transaction and then sees a READY row.
+ */
+export async function publishReadyIfOwned(
+  transaction: PublicationTransaction,
+  attempt: AttemptRef,
+  data: { durationSeconds: number; width: number; height: number },
+): Promise<boolean> {
+  await transaction.$executeRawUnsafe(
+    `SET LOCAL lock_timeout = ${PUBLISH_LOCK_TIMEOUT_MS}`,
+  );
+  await transaction.$executeRawUnsafe(
+    `SET LOCAL statement_timeout = ${PUBLISH_STATEMENT_TIMEOUT_MS}`,
+  );
+  await transaction.$queryRaw`
+    SELECT 1 FROM "Video" WHERE "id" = ${attempt.videoId}::uuid FOR UPDATE`;
+  const published = await transaction.$executeRaw`
+    UPDATE "Video"
+    SET "status" = 'READY',
+        "durationSeconds" = ${data.durationSeconds}::int,
+        "width" = ${data.width}::int,
+        "height" = ${data.height}::int,
+        "failureReason" = NULL,
+        "processingFinishedAt" = clock_timestamp() AT TIME ZONE 'UTC',
+        "committedAttemptId" = ${attempt.attemptId}::uuid,
+        "processingAttemptId" = NULL,
+        "processingLeaseExpiresAt" = NULL,
+        "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC'
+    WHERE "id" = ${attempt.videoId}::uuid
+      AND "processingGeneration" = ${attempt.generation}::int
+      AND "processingAttemptId" = ${attempt.attemptId}::uuid
+      AND "status" = 'PROCESSING'
+      AND "processingLeaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')`;
+  return published === 1;
 }
 
 /**
- * Keeps one attempt's lease alive while FFmpeg and uploads run outside any
- * transaction. `ensureOwned` is both a heartbeat and an authoritative,
- * database-verified ownership check used before every publication step.
+ * Rejects with `signal.reason` as soon as the signal aborts, otherwise settles
+ * like `promise`. It never cancels the underlying work; it only stops waiting,
+ * so it is for database calls that have no cancellation of their own.
+ */
+export function untilAborted<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
+
+export interface AttemptLeaseOptions {
+  leaseSeconds: number;
+  renewIntervalMs: number;
+  /** Hard ceiling: when it passes, the attempt's work is cancelled. */
+  maxDurationMs: number;
+  /**
+   * `performance.now()` taken before the acquisition request was sent. Anchoring
+   * local validity and the deadline here keeps them conservative: the database
+   * lease cannot start earlier than this instant.
+   */
+  acquiredAt?: number;
+  /** Aborts when the worker begins shutting down. */
+  shutdownSignal?: AbortSignal;
+}
+
+/**
+ * One cancellation lifecycle per attempt. `signal` aborts, with a typed
+ * `ProcessingError` as its reason, when any of these happens first:
+ *  - the hard deadline passes (`AttemptDeadlineError`);
+ *  - a renewal shows the attempt no longer owns the generation
+ *    (`AttemptOwnershipLostError`);
+ *  - the lease can no longer be confirmed: no renewal succeeded within the
+ *    lease length, e.g. because the database is unreachable
+ *    (`AttemptLeaseExpiredError`);
+ *  - the worker shuts down (`WorkerShutdownError`).
+ *
+ * Renewals are serialized, never overlap, and never start after `stop()`.
+ * `ensureOwned` is both a heartbeat and an authoritative, database-verified
+ * ownership check used before publication steps.
  */
 export class AttemptLease {
   private readonly logger = new Logger(AttemptLease.name);
-  private readonly startedAt = Date.now();
-  private timer?: ReturnType<typeof setInterval>;
-  private lost = false;
+  private readonly controller = new AbortController();
+  private readonly acquiredAt: number;
+  private validUntil: number;
+  private heartbeatTimer?: ReturnType<typeof setTimeout>;
+  private deadlineTimer?: ReturnType<typeof setTimeout>;
+  private validityTimer?: ReturnType<typeof setTimeout>;
+  private renewals: Promise<unknown> = Promise.resolve();
+  private stopped = false;
+  private readonly onShutdown = () => this.cancel(new WorkerShutdownError());
 
   constructor(
     private readonly database: LeaseDatabase,
     readonly attempt: AttemptRef,
     private readonly options: AttemptLeaseOptions,
-  ) {}
-
-  start(): void {
-    this.timer = setInterval(
-      () => void this.heartbeat(),
-      this.options.renewIntervalMs,
-    );
-    this.timer.unref();
+  ) {
+    this.acquiredAt = options.acquiredAt ?? performance.now();
+    this.validUntil = this.acquiredAt + options.leaseSeconds * 1_000;
   }
 
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  start(): void {
+    if (this.stopped || this.signal.aborted) return;
+    const shutdown = this.options.shutdownSignal;
+    if (shutdown?.aborted) {
+      this.cancel(new WorkerShutdownError());
+      return;
+    }
+    shutdown?.addEventListener('abort', this.onShutdown, { once: true });
+    this.deadlineTimer = setTimeout(
+      () => this.cancel(new AttemptDeadlineError()),
+      Math.max(
+        0,
+        this.acquiredAt + this.options.maxDurationMs - performance.now(),
+      ),
+    );
+    this.deadlineTimer.unref();
+    this.armValidity();
+    this.scheduleHeartbeat();
+  }
+
+  /** Ends the lifecycle: no timers, no further renewals, and the signal aborts. */
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
+    if (this.stopped) return;
+    this.stopped = true;
+    this.clearTimers();
+    if (!this.signal.aborted)
+      this.controller.abort(new Error('The processing attempt finished'));
   }
 
   async ensureOwned(): Promise<void> {
-    if (this.lost) throw new AttemptOwnershipLostError();
-    if (this.exceededMaxDuration()) {
-      throw new ProcessingError(
-        'The processing attempt exceeded its maximum duration',
-        true,
-        'Video processing timed out',
-      );
-    }
-    if (!(await this.renew())) throw new AttemptOwnershipLostError();
+    this.signal.throwIfAborted();
+    const confirmed = await untilAborted(this.renew(), this.signal);
+    this.signal.throwIfAborted();
+    if (!confirmed) throw new AttemptOwnershipLostError();
   }
 
-  private exceededMaxDuration(): boolean {
-    return Date.now() - this.startedAt > this.options.maxDurationMs;
+  private cancel(reason: Error): void {
+    if (this.signal.aborted) return;
+    this.clearTimers();
+    this.logger.warn({
+      event: 'video.processing.attempt_cancelled',
+      videoId: this.attempt.videoId,
+      generation: this.attempt.generation,
+      attemptId: this.attempt.attemptId,
+      reason: reason.name,
+    });
+    this.controller.abort(reason);
   }
 
-  private async renew(): Promise<boolean> {
+  private clearTimers(): void {
+    clearTimeout(this.heartbeatTimer);
+    clearTimeout(this.deadlineTimer);
+    clearTimeout(this.validityTimer);
+    this.heartbeatTimer = this.deadlineTimer = this.validityTimer = undefined;
+    this.options.shutdownSignal?.removeEventListener('abort', this.onShutdown);
+  }
+
+  /** Cancels the attempt if no renewal is confirmed before the lease can end. */
+  private armValidity(): void {
+    clearTimeout(this.validityTimer);
+    if (this.stopped || this.signal.aborted) return;
+    this.validityTimer = setTimeout(
+      () => this.cancel(new AttemptLeaseExpiredError()),
+      Math.max(0, this.validUntil - performance.now()),
+    );
+    this.validityTimer.unref();
+  }
+
+  private scheduleHeartbeat(): void {
+    if (this.stopped || this.signal.aborted) return;
+    this.heartbeatTimer = setTimeout(
+      () => void this.heartbeat(),
+      this.options.renewIntervalMs,
+    );
+    this.heartbeatTimer.unref();
+  }
+
+  /** One renewal at a time; each starts only after the previous one settled. */
+  private renew(): Promise<boolean> {
+    const run = this.renewals.then(() => this.renewOnce());
+    this.renewals = run.catch(() => undefined);
+    return run;
+  }
+
+  private async renewOnce(): Promise<boolean> {
+    // Queued renewals run later than they were requested; one that outlives
+    // the attempt must not touch the database.
+    if (this.stopped || this.signal.aborted) return false;
+    const sentAt = performance.now();
     const renewed = await renewAttempt(
       this.database,
       this.attempt,
       this.options.leaseSeconds,
     );
-    if (!renewed) {
-      this.lost = true;
-      this.stop();
+    if (this.stopped || this.signal.aborted) return renewed;
+    if (renewed) {
+      this.validUntil = Math.max(
+        this.validUntil,
+        sentAt + this.options.leaseSeconds * 1_000,
+      );
+      this.armValidity();
+    } else {
+      this.logger.warn({
+        event: 'video.processing.lease_lost',
+        videoId: this.attempt.videoId,
+        generation: this.attempt.generation,
+        attemptId: this.attempt.attemptId,
+      });
+      this.cancel(new AttemptOwnershipLostError());
     }
     return renewed;
   }
 
   private async heartbeat(): Promise<void> {
-    if (this.exceededMaxDuration()) {
-      this.logger.warn({
-        event: 'video.processing.lease_max_duration_exceeded',
-        videoId: this.attempt.videoId,
-        generation: this.attempt.generation,
-        attemptId: this.attempt.attemptId,
-      });
-      this.stop();
-      return;
-    }
     try {
-      if (!(await this.renew())) {
-        this.logger.warn({
-          event: 'video.processing.lease_lost',
-          videoId: this.attempt.videoId,
-          generation: this.attempt.generation,
-          attemptId: this.attempt.attemptId,
-        });
-      }
+      await this.renew();
     } catch (error) {
       this.logger.warn({
         event: 'video.processing.lease_renewal_failed',
@@ -213,5 +389,6 @@ export class AttemptLease {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    this.scheduleHeartbeat();
   }
 }

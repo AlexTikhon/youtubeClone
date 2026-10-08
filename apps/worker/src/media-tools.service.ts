@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -11,6 +10,7 @@ import {
   type MediaMetadata,
 } from './media-metadata.js';
 import { ProcessingError } from './processing-error.js';
+import { runProcess } from './run-process.js';
 import {
   createMasterPlaylist,
   type GeneratedRendition,
@@ -32,7 +32,7 @@ export class MediaToolsService {
     ]);
   }
 
-  async probe(inputPath: string): Promise<MediaMetadata> {
+  async probe(inputPath: string, signal?: AbortSignal): Promise<MediaMetadata> {
     const stdout = await this.run(
       workerEnvironment.FFPROBE_PATH,
       [
@@ -45,6 +45,7 @@ export class MediaToolsService {
         inputPath,
       ],
       'ffprobe',
+      signal,
     );
     const metadata = parseProbeOutput(stdout);
     if (
@@ -63,6 +64,7 @@ export class MediaToolsService {
     inputPath: string,
     outputPath: string,
     metadata: MediaMetadata,
+    signal?: AbortSignal,
   ): Promise<{ width: number; height: number }> {
     const size = fitWithin720p(metadata.width, metadata.height);
     const timestamp = Math.max(
@@ -86,6 +88,7 @@ export class MediaToolsService {
         outputPath,
       ],
       'thumbnail generation',
+      signal,
     );
     return size;
   }
@@ -94,6 +97,7 @@ export class MediaToolsService {
     inputPath: string,
     outputDirectory: string,
     spec: RenditionSpec,
+    signal?: AbortSignal,
   ): Promise<GeneratedRendition> {
     const renditionDirectory = join(outputDirectory, spec.name);
     await mkdir(renditionDirectory, { recursive: true });
@@ -141,6 +145,7 @@ export class MediaToolsService {
         join(renditionDirectory, 'index.m3u8'),
       ],
       `${spec.name} HLS transcoding`,
+      signal,
     );
     const segmentCount = (await readdir(renditionDirectory)).filter((name) =>
       /^segment\d{3,6}\.ts$/.test(name),
@@ -172,62 +177,12 @@ export class MediaToolsService {
     executable: string,
     args: string[],
     operation: string,
+    signal?: AbortSignal,
   ): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(executable, args, {
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      let timedOut = false;
-      const append = (current: string, chunk: Buffer) =>
-        (current + chunk.toString()).slice(-2_000_000);
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout = append(stdout, chunk);
-      });
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr = append(stderr, chunk);
-      });
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGKILL');
-      }, workerEnvironment.MEDIA_PROCESS_TIMEOUT_MS);
-      child.once('error', (error) => {
-        clearTimeout(timeout);
-        reject(
-          new ProcessingError(
-            `${operation} could not start: ${error.message}`,
-            false,
-            'The media processor is unavailable',
-            { cause: error },
-          ),
-        );
-      });
-      child.once('close', (code) => {
-        clearTimeout(timeout);
-        if (timedOut) {
-          reject(
-            new ProcessingError(
-              `${operation} timed out`,
-              true,
-              'Video processing timed out',
-            ),
-          );
-        } else if (code !== 0) {
-          reject(
-            new ProcessingError(
-              `${operation} failed with exit code ${String(code)}: ${stderr}`,
-              false,
-              operation === 'ffprobe'
-                ? 'The uploaded file is not a valid video'
-                : 'The video could not be transcoded',
-            ),
-          );
-        } else {
-          resolve(stdout);
-        }
-      });
+    return runProcess(executable, args, {
+      operation,
+      signal,
+      timeoutMs: workerEnvironment.MEDIA_PROCESS_TIMEOUT_MS,
     });
   }
 }
