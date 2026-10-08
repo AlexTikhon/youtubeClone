@@ -9,7 +9,7 @@ challenges. This document remains the compact rationale reference.
 ```text
                                   Browser
                        /             |              \
-              Next.js application   |       direct signed PUT
+              Next.js application   |       direct presigned POST
                        |             |              |
                  REST + cookie       |              v
                        v             |            MinIO
@@ -119,9 +119,9 @@ security, and product behavior that the code actually demonstrates.
 
 ```text
 Browser -> API: create owned video draft
-API -> Browser: signed upload URL (15 minutes)
-Browser -> MinIO: PUT original MP4
-Browser -> API: complete upload
+API -> Browser: presigned POST policy (15 minutes, exact key/type/size)
+Browser -> MinIO: POST original MP4 (storage enforces the policy)
+Browser -> API: complete upload (idempotent; replay returns current state)
 API -> MinIO: HEAD and verify size/content type
 API -> PostgreSQL: ORIGINAL + generation 1 + outbox (short transaction)
 API publisher -> Redis/BullMQ: enqueue deterministic generation job
@@ -131,7 +131,7 @@ Worker -> planner: source-aware 360/480/720 selection
 Worker -> FFmpeg: source thumbnail + sequential HLS renditions
 Worker -> worker: write master.m3u8 with relative variants
 Worker -> MinIO: upload segments, variants, master last, thumbnail
-Worker -> PostgreSQL: assets + READY (short transaction)
+Worker -> PostgreSQL: assets + READY (short transaction fenced by generation + attempt)
 ```
 
 ## Failure and idempotency sequence
@@ -142,8 +142,11 @@ invalid/corrupt media              -> discard retries and mark FAILED
 retry budget exhausted             -> best-effort generated cleanup + FAILED
 owner retry                        -> validate ORIGINAL + increment generation + outbox
 old generation wakes              -> generation mismatch -> successful no-op
+overlapping attempt wakes         -> lease/attempt mismatch -> ownership lost, no publish, own cleanup only
+queue job lost or stalled terminal -> reconciler re-publishes or marks FAILED for owner retry
 concurrent deletion                -> DELETING wins; completion CAS fails; cleanup prefixes
 duplicate READY delivery           -> no-op
+completion response lost          -> replay returns current state; no second upload
 ```
 
 External processing never runs inside a database transaction. The processing outbox makes the state

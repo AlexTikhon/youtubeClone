@@ -60,6 +60,15 @@ export const workerEnvironmentSchema = infrastructureSchema.extend({
     .min(60)
     .max(86_400)
     .default(7_200),
+  /** How long an attempt owns a generation without renewing its lease. */
+  WORKER_LEASE_SECONDS: z.coerce.number().int().min(5).max(3_600).default(60),
+  /** Hard ceiling after which an attempt stops renewing and is recoverable. */
+  WORKER_ATTEMPT_MAX_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(86_400)
+    .default(10_800),
 });
 
 export const webEnvironmentSchema = z.object({

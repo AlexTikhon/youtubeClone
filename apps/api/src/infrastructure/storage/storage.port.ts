@@ -2,11 +2,19 @@ import type { Readable } from 'node:stream';
 
 export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');
 
-export interface CreateUploadUrlInput {
+export interface CreateUploadPolicyInput {
   bucket: string;
   objectKey: string;
   contentType: string;
+  /** The only object size the storage service will admit. */
+  sizeBytes: bigint;
   expiresInSeconds: number;
+}
+
+/** A browser form upload (multipart POST) whose limits object storage enforces. */
+export interface UploadPolicy {
+  url: string;
+  fields: Record<string, string>;
 }
 
 export interface StoredObjectMetadata {
@@ -21,7 +29,7 @@ export interface StoredObject {
 }
 
 export interface ObjectStorage {
-  createUploadUrl(input: CreateUploadUrlInput): Promise<string>;
+  createUploadPolicy(input: CreateUploadPolicyInput): Promise<UploadPolicy>;
   headObject(bucket: string, objectKey: string): Promise<StoredObjectMetadata>;
   getObject(bucket: string, objectKey: string): Promise<StoredObject>;
   deleteObject(bucket: string, objectKey: string): Promise<void>;

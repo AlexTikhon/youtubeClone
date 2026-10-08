@@ -4,11 +4,10 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
-  PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import type { Readable } from 'node:stream';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { OnApplicationShutdown } from '@nestjs/common';
 
@@ -16,10 +15,11 @@ import type { ApiEnvironment } from '@youtube-clone/config';
 
 import { API_ENVIRONMENT } from '../../config/config.module.js';
 import type {
-  CreateUploadUrlInput,
+  CreateUploadPolicyInput,
   ObjectStorage,
   StoredObject,
   StoredObjectMetadata,
+  UploadPolicy,
 } from './storage.port.js';
 import {
   ObjectNotFoundError,
@@ -45,17 +45,27 @@ export class S3StorageAdapter implements ObjectStorage, OnApplicationShutdown {
     });
   }
 
-  async createUploadUrl(input: CreateUploadUrlInput): Promise<string> {
+  /**
+   * A presigned POST policy rather than a presigned PUT: a PUT URL cannot carry
+   * a size limit, so storage would accept any number of bytes. The signed policy
+   * pins the bucket, key, content type and an exact content-length-range, which
+   * the storage service itself enforces before accepting the object.
+   */
+  async createUploadPolicy(
+    input: CreateUploadPolicyInput,
+  ): Promise<UploadPolicy> {
     try {
-      return await getSignedUrl(
-        this.client,
-        new PutObjectCommand({
-          Bucket: input.bucket,
-          Key: input.objectKey,
-          ContentType: input.contentType,
-        }),
-        { expiresIn: input.expiresInSeconds },
-      );
+      if (input.sizeBytes <= 0n)
+        throw new RangeError('The upload size must be positive');
+      const size = Number(input.sizeBytes);
+      const { url, fields } = await createPresignedPost(this.client, {
+        Bucket: input.bucket,
+        Key: input.objectKey,
+        Expires: input.expiresInSeconds,
+        Fields: { 'Content-Type': input.contentType },
+        Conditions: [['content-length-range', size, size]],
+      });
+      return { url, fields };
     } catch (error) {
       throwStorageError(error);
     }

@@ -49,9 +49,9 @@ opening the database unless asked.
 Open **Upload**, choose the short MP4, enter a clear unique title, and start. While the progress bar
 moves, explain:
 
-- NestJS creates the DRAFT and a 15-minute signed PUT intent;
-- `XMLHttpRequest` PUTs bytes directly to MinIO and exposes progress/cancellation;
-- upload completion HEADs the object and verifies size/content type;
+- NestJS creates the DRAFT and a 15-minute presigned POST policy bound to the declared size;
+- `XMLHttpRequest` posts the form directly to MinIO, which enforces key, type, and size, and exposes progress/cancellation;
+- upload completion (idempotent) HEADs the object and verifies size/content type;
 - the completion transaction writes UPLOADED, generation 1, ORIGINAL, and the outbox row.
 
 Open `UploadsService.complete` briefly if the upload is still running. Emphasize that direct upload
@@ -62,9 +62,9 @@ avoids proxying a potentially 2 GB request through the API.
 Keep Studio/upload polling visible and show the outbox/worker files. Follow this sequence:
 
 ```text
-outbox publisher -> deterministic generation job -> worker PROCESSING claim
+outbox publisher -> deterministic generation job -> worker attempt lease (PROCESSING)
 -> ffprobe -> thumbnail -> source-aware renditions -> master.m3u8
--> generation-isolated MinIO paths -> asset/READY transaction
+-> attempt-isolated MinIO paths -> fenced asset/READY transaction
 ```
 
 State that BullMQ attempts are retries inside one processing generation. An owner retry creates a new

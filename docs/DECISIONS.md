@@ -27,9 +27,58 @@ limited to development/test. Deployment must also provide its normal production 
 
 ## Direct upload, proxied playback
 
-Large incoming bytes bypass NestJS through a signed PUT. Outgoing HLS and thumbnails use authorized
-API routes for a correct, simple localhost/private-video boundary. A CDN/object-store delivery layer
-can replace that adapter later without changing frontend DTOs.
+Large incoming bytes bypass NestJS through a presigned **POST policy**. Outgoing HLS and thumbnails use
+authorized API routes for a correct, simple localhost/private-video boundary. A CDN/object-store
+delivery layer can replace that adapter later without changing frontend DTOs.
+
+A presigned PUT was rejected for uploads: it cannot carry a size limit, so `MAX_UPLOAD_SIZE_BYTES`
+would only validate the _client-declared_ size while storage accepted any number of bytes, and the
+mismatch would be discovered only after storage had taken them. A POST policy lets object storage
+itself enforce the exact key, the exact content type, and a `content-length-range` bound to the upload
+intent, still with direct browser-to-storage transfer, progress events, and cancellation. The range is
+exact (declared size, declared size) because completion already requires an exact match, which
+rejects a mismatch earlier and at no extra cost. The declared size is capped by the configurable limit
+both when the intent is created and when a pending intent is re-signed. The cost is a multipart
+form in the browser (signed fields first, file last) instead of a raw body; MinIO and S3 both
+implement the policy conditions, which `apps/api/test/upload-admission.integration.test.ts` verifies
+against real MinIO.
+
+## Idempotent upload completion
+
+Completion may succeed on the server while its response is lost, and a retry must not require
+re-uploading or fail with a state conflict. Replaying completion for an upload whose record is
+`COMPLETED` returns the video's current lifecycle state (`UPLOADED`, `PROCESSING`, `READY`, or
+`FAILED`) with `alreadyCompleted: true`. Requiring the upload record to be `COMPLETED` keeps unrelated
+states (a draft, a deleting video, a failed video whose upload never finished) rejected. Concurrent
+first calls race on the `UPLOADING -> UPLOADED` compare-and-set and the loser reports the winner's
+state, so one asset and one outbox event exist without extra locking. The client treats a network
+error or 5xx as _uncertain_ and consults the owner's view of the video before retrying only the step
+that is actually missing.
+
+## Attempt ownership instead of job-ID fencing
+
+Generation fencing and a deterministic BullMQ job ID cannot distinguish two overlapping executions of
+the same generation, and raising the lock duration or worker concurrency only narrows the window.
+Ownership is a PostgreSQL concern, so each execution acquires an _attempt_ with a renewable lease on
+the video row: atomic acquisition or takeover, conditional renewal, and READY/FAILED transitions fenced
+by generation and attempt ID. Output lives under a unique per-attempt prefix, and the winning attempt
+is recorded (`committedAttemptId`, `VideoAsset.attemptId`) so media selection is explicit. A lease in
+the video row keeps the design inside the existing modular monolith: no lock service, no workflow
+framework, and transactions stay short because FFmpeg and uploads never run inside one. The lease uses
+the database clock and a heartbeat, and stops renewing after a hard ceiling so a wedged attempt is
+recoverable. The cost is a heartbeat per active attempt and four nullable columns; the benefit is that
+a slow or partitioned worker is merely a loser, never a corrupting writer.
+
+## Reconciliation of stranded generations
+
+The outbox closes the PostgreSQL-to-Redis dual write only until an event is marked published; Redis can
+then lose the job, and BullMQ can fail one outside the worker's error handling. Rather than a generic
+scheduler, a small reconciler inspects only published events whose generation is still pending and has
+no valid lease, claims each with an atomic timestamp (multi-instance safe), and applies idempotent
+conditional writes: re-publish a missing job after revoking the expired owner, or move to FAILED so the
+existing owner Retry works. Scans, inspections, and re-publications are bounded, and retention never
+removes evidence for unfinished generations. It is a backstop; the worker records terminal BullMQ
+failures itself when it can.
 
 ## Source-aware adaptive MPEG-TS HLS
 
@@ -69,7 +118,7 @@ ABR multiplies temporary disk and CPU work within each job.
 ORIGINAL database record and MinIO object, compare-and-sets the failed generation, increments it, and
 writes a purpose-specific outbox event in one PostgreSQL transaction. `READY -> PROCESSING` remains
 forbidden because this feature recovers terminal failures rather than replacing healthy published
-media. BullMQ attempts remain internal retries within one generation.
+media. BullMQ attempts remain internal retries within one generation, each owning the generation through a lease.
 
 The outbox exists because PostgreSQL state and Redis/BullMQ enqueueing are a dual write with no shared
 transaction. A tiny periodic publisher plus deterministic generation-specific job IDs closes the
@@ -98,8 +147,8 @@ fingerprinting. Distributed rate limiting and rolling view windows are productio
 ## Synchronous retryable deletion
 
 The local deployment performs storage cleanup synchronously behind `DELETING` instead of adding a
-second queue. Cleanup is idempotent and retryable. Worker checks before upload and at commit, with
-generated-prefix cleanup after a lost completion claim. `DeleteObjects` per-key errors count as a
+second queue. Cleanup is idempotent and retryable. Worker ownership checks run before upload and at commit, with
+that attempt's own prefix cleaned after a lost completion claim. `DeleteObjects` per-key errors count as a
 failed cleanup even when the S3 request itself succeeded. A failed request can leave a pending-deletion
 row, which is safer than deleting database authority while media remains.
 

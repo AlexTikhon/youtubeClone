@@ -21,13 +21,19 @@ first file in each section; open the others for the deeper invariant or client b
 
 ## Direct upload
 
-- `apps/web/src/features/video-upload/video-upload-form.tsx` — draft, signed intent, upload,
-  completion, cancellation, retry, and processing polling.
-- `apps/web/src/shared/upload/upload-file.ts` — XMLHttpRequest PUT progress and AbortSignal bridge.
-- `apps/api/src/uploads/uploads.service.ts` — signed intent, MinIO HEAD verification, completion
-  transaction, ORIGINAL asset, and outbox row.
-- `apps/api/src/infrastructure/storage/s3-storage.adapter.ts` — S3-compatible presign/HEAD/read/delete.
+- `apps/web/src/features/video-upload/video-upload-form.tsx` — draft, upload intent, upload,
+  idempotent completion, cancellation, three-way recovery, and processing polling.
+- `apps/web/src/features/video-upload/upload-recovery.ts` — pure uncertain-completion decisions.
+- `apps/web/src/shared/upload/upload-file.ts` — XMLHttpRequest multipart POST progress and
+  AbortSignal bridge.
+- `apps/api/src/uploads/uploads.service.ts` — size-bound upload policy, MinIO HEAD verification,
+  idempotent completion transaction, ORIGINAL asset, and outbox row.
+- `apps/api/src/infrastructure/storage/s3-storage.adapter.ts` — S3-compatible presigned POST
+  policy, HEAD/read/delete.
 - `apps/api/src/videos/videos.controller.ts` — concrete upload routes.
+- `apps/api/test/upload-admission.integration.test.ts` — real MinIO rejects oversize, undersize,
+  wrong key, wrong content type, and expired uploads.
+- `apps/api/test/upload-completion.integration.test.ts` — concurrent and replayed completion.
 
 ## Processing outbox and queue
 
@@ -35,15 +41,19 @@ first file in each section; open the others for the deeper invariant or client b
   marker, and retention cleanup.
 - `apps/api/src/infrastructure/queue/bull-video-processing-queue.adapter.ts` — three attempts,
   exponential backoff, and deterministic enqueue.
-- `apps/api/src/infrastructure/queue/video-processing-queue.port.ts` — queue port and job-ID format.
+- `apps/api/src/infrastructure/queue/video-processing-queue.port.ts` — queue port (enqueue, job
+  state, requeue) and job-ID format.
+- `apps/api/src/infrastructure/queue/processing-reconciler.ts` — bounded recovery of stranded
+  generations, safe across API instances.
 - `apps/api/prisma/schema.prisma` — unique `(videoId, generation)` outbox constraint.
 - `packages/types/src/index.ts` — versioned `ProcessVideoJob` contract and queue name.
 
 ## Worker and FFmpeg
 
 - `apps/worker/src/video-worker.service.ts` — BullMQ consumer, attempt semantics, logs, discard/fail.
-- `apps/worker/src/video-processing.pipeline.ts` — claims, ownership checks, probe/transcode/upload,
-  READY transaction, failure, and cleanup.
+- `apps/worker/src/video-processing.pipeline.ts` — lease acquisition, ownership checks,
+  probe/transcode/upload, fenced READY transaction, fenced failure, and scoped cleanup.
+- `apps/worker/src/processing-lease.ts` — atomic acquire/takeover, conditional renewal, heartbeat.
 - `apps/worker/src/media-tools.service.ts` — ffprobe and FFmpeg command construction and timeouts.
 - `apps/worker/src/processing-error.ts` — retryable versus terminal processing errors.
 - `apps/worker/src/config.ts` — validated worker environment.
@@ -52,7 +62,7 @@ first file in each section; open the others for the deeper invariant or client b
 
 - `apps/worker/src/hls-renditions.ts` — source-aware 360p/480p/720p selection and master playlist.
 - `apps/worker/src/media-tools.service.ts` — six-second H.264/AAC MPEG-TS rendition generation.
-- `apps/worker/src/storage.service.ts` — generation-specific HLS upload and metadata.
+- `apps/worker/src/storage.service.ts` — attempt-specific HLS upload and metadata.
 - `apps/worker/test/media-tools.media.integration.test.ts` — real FFmpeg three-variant and
   video-only verification.
 
@@ -61,7 +71,12 @@ first file in each section; open the others for the deeper invariant or client b
 - `apps/api/src/videos/videos.service.ts` — FAILED-only owner retry, original verification,
   generation increment, and compare-and-set transaction.
 - `apps/worker/src/video-processing.pipeline.ts` — stale checks before work/upload/commit and in fail.
-- `apps/worker/src/storage.service.ts` — `generations/{generation}` object layout and cleanup.
+- `apps/worker/src/storage.service.ts` — `generations/{generation}/attempts/{attemptId}` object
+  layout and attempt-scoped cleanup.
+- `apps/worker/test/attempt-ownership.integration.test.ts` — overlapping attempts, late fail,
+  lease takeover, and deletion against real PostgreSQL and MinIO.
+- `apps/api/test/processing-reconciliation.integration.test.ts` — missing, failed, and stranded
+  jobs, live leases, and concurrent reconciliation against real PostgreSQL and Redis.
 - `apps/api/test/processing-retry.integration.test.ts` — exactly one concurrent retry and durable
   generation-2 publication.
 - `apps/worker/test/processing-retry.media.integration.test.ts` — real generation-2 recovery to READY.

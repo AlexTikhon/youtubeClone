@@ -10,24 +10,42 @@ DRAFT -> UPLOADING -> UPLOADED -> PROCESSING -> READY
                               +-- owner retry --> PROCESSING (new generation)
 ```
 
-The API records an upload intent before issuing a 15-minute signed PUT URL. Completion checks video
-ownership, expected state/upload record, object existence, non-zero and expected byte length, and
-the intended `video/mp4` content type. It then transactionally creates the ORIGINAL asset and moves
-the video to UPLOADED, assigns processing generation 1, and writes a processing outbox row in the
-same transaction. A genuinely missing uploaded object remains a 409 conflict; object-storage
-unavailability returns 503 and does not instruct the user to upload again. A lightweight API publisher
-later enqueues the versioned BullMQ job.
+The API records an upload intent (key, content type, and declared size) before issuing a 15-minute
+**presigned POST policy**. A presigned PUT URL cannot carry a size limit, so storage would accept any
+number of bytes; the POST policy instead pins the bucket, the exact object key, the exact
+`Content-Type`, and a `content-length-range` equal to the declared size, and MinIO/S3 enforce those
+conditions before accepting the object. `MAX_UPLOAD_SIZE_BYTES` still bounds the _declared_ size when
+the intent is created (and again when a pending intent is re-signed), so the largest object storage
+can ever admit is the configured limit. The bucket stays private; the policy grants nothing but that
+one upload. The browser sends a multipart form (signed fields first, the file last) directly to
+storage; the NestJS API never buffers video bytes.
 
-Because the signed PUT remains usable until its 15-minute expiry, the worker compares the object's
-current content length with the API-verified ORIGINAL record before downloading it. A changed length
-is treated as invalid input; the downloaded bytes are still validated authoritatively by ffprobe.
-A same-length owner replacement during that short URL lifetime cannot be distinguished without an
-object version or client-provided digest. The random per-video object key limits the capability to
-that upload, and ffprobe remains authoritative, but immutable promotion or checksums would be the
-production hardening step.
+Completion checks video ownership, expected state/upload record, object existence, non-zero and
+expected byte length, and the intended `video/mp4` content type; these checks remain as defense in
+depth even though storage already rejects mismatched uploads. It then transactionally creates the
+ORIGINAL asset and moves the video to UPLOADED, assigns processing generation 1, and writes a
+processing outbox row in the same transaction. A genuinely missing uploaded object remains a 409
+conflict; object-storage unavailability returns 503 and does not instruct the user to upload again. A
+lightweight API publisher later enqueues the versioned BullMQ job.
 
-The worker claims UPLOADED as PROCESSING through the shared domain transition rules, then works in a
-unique `mkdtemp` directory:
+Completion is **idempotent**. Replaying it for an upload that was already accepted returns the
+video's current lifecycle state (`UPLOADED`, `PROCESSING`, `READY`, or `FAILED`, the generation, and
+`alreadyCompleted: true`) instead of a conflict, because the client may only have lost the first
+response. A replay requires the upload record itself to be `COMPLETED`, so unrelated states (a
+deleting video, a draft, a failed video whose upload never finished) are still rejected. Concurrent
+first calls race on the `UPLOADING -> UPLOADED` compare-and-set; the loser re-reads and reports the
+winner's accepted state, so exactly one ORIGINAL asset and one generation outbox event exist.
+
+The POST policy remains valid until its 15-minute expiry, so the owner could in principle replace the
+object after completion. The worker therefore compares the object's current content length with the
+API-verified ORIGINAL record before downloading it. A changed length is treated as invalid input; the
+downloaded bytes are still validated authoritatively by ffprobe. A same-length owner replacement
+during that short window cannot be distinguished without an object version or client-provided digest.
+The random per-video object key limits the capability to that upload, and ffprobe remains
+authoritative, but immutable promotion or checksums would be the production hardening step.
+
+The worker acquires the generation with an **attempt lease** (see below), which also moves UPLOADED to
+PROCESSING through the shared domain transition rules, then works in a unique `mkdtemp` directory:
 
 ```text
 MinIO ORIGINAL -> local original -> ffprobe
@@ -37,8 +55,8 @@ MinIO ORIGINAL -> local original -> ffprobe
                                       +-> hls/480p/index.m3u8 + segments
                                       +-> hls/720p/index.m3u8 + segments
                                   +-> hls/master.m3u8
-                                  -> upload generated assets
-                                  -> short metadata/assets/READY transaction
+                                  -> verify lease, upload generated assets
+                                  -> verify lease, short fenced metadata/assets/READY transaction
                                   -> remove temporary directory in finally
 ```
 
@@ -69,35 +87,63 @@ level string from each output.
 
 ```text
 video-originals/originals/{videoId}/{randomObjectId}.mp4
-video-thumbnails/videos/{videoId}/generations/{generation}/thumbnail/thumbnail.jpg
-video-streams/videos/{videoId}/generations/{generation}/hls/master.m3u8
-video-streams/videos/{videoId}/generations/{generation}/hls/360p/index.m3u8
-video-streams/videos/{videoId}/generations/{generation}/hls/360p/segment000.ts
-video-streams/videos/{videoId}/generations/{generation}/hls/480p/index.m3u8
-video-streams/videos/{videoId}/generations/{generation}/hls/720p/index.m3u8
+video-thumbnails/videos/{videoId}/generations/{generation}/attempts/{attemptId}/thumbnail/thumbnail.jpg
+video-streams/videos/{videoId}/generations/{generation}/attempts/{attemptId}/hls/master.m3u8
+video-streams/videos/{videoId}/generations/{generation}/attempts/{attemptId}/hls/360p/index.m3u8
+video-streams/videos/{videoId}/generations/{generation}/attempts/{attemptId}/hls/360p/segment000.ts
+video-streams/videos/{videoId}/generations/{generation}/attempts/{attemptId}/hls/480p/index.m3u8
+video-streams/videos/{videoId}/generations/{generation}/attempts/{attemptId}/hls/720p/index.m3u8
 ```
 
-Generated paths are deterministic within an isolated logical generation. Each variant's segments
-upload before its playlist; the master uploads last. Segments remain only in object storage.
-PostgreSQL stores ORIGINAL, THUMBNAIL, and one
-HLS_MANIFEST row whose object key is `master.m3u8` and whose JSON metadata describes every rendition.
-The successful transaction creates the authoritative THUMBNAIL and HLS_MANIFEST rows. Guarded media
-routes resolve those records, so stable public URLs never expose storage keys and never select an
-unsuccessful generation. Existing legacy `hls/...` records remain readable.
+Every worker _attempt_ writes under its own unique `attempts/{attemptId}/` prefix, so overlapping
+executions of one generation never share a key. Each variant's segments upload before its playlist;
+the master uploads last. Segments remain only in object storage. PostgreSQL stores ORIGINAL,
+THUMBNAIL, and one HLS_MANIFEST row whose object key is `master.m3u8` and whose JSON metadata
+describes every rendition. The READY transaction creates the authoritative THUMBNAIL and HLS_MANIFEST
+rows tagged with `VideoAsset.attemptId`, records `Video.committedAttemptId`, and deletes any other
+generated rows. Guarded media routes resolve only the committed attempt's rows, so stable public URLs
+never expose storage keys and never select an unsuccessful or losing attempt. Legacy videos
+(`committedAttemptId` and asset `attemptId` both null, keys under `generations/{n}/hls/` or `hls/`)
+remain readable.
 
-## Retries, idempotency, and failure
+## Retries, attempt ownership, and failure
 
 BullMQ uses three attempts with exponential backoff and a deterministic
-`video-{videoId}-generation-{generation}` job ID.
-This is at-least-once execution, not distributed exactly-once processing. Retries reuse deterministic
-generation keys, clear that generation's partial prefix before upload, and upsert asset rows. READY
-delivery is a no-op. Network/storage/database failures are
-retryable; invalid probe output, unavailable media executables, and deterministic FFmpeg failures
-are non-retryable. The video moves to FAILED only for a non-retryable error or after retry exhaustion.
-Terminal failure makes a best-effort removal of generated thumbnail/HLS objects and stores a safe
-failure reason. Failure of one required rendition fails the entire attempt; no partial ladder is
-marked READY. Every attempt removes its unique local working directory, including all rendition
-directories and the master, in `finally`.
+`video-{videoId}-generation-{generation}` job ID. This is at-least-once delivery, not distributed
+exactly-once processing, and a job ID alone cannot prevent two executions of one generation from
+overlapping (a stalled job is redelivered while its first worker is merely slow, or two workers pick
+up a retried job). Ownership is therefore enforced in PostgreSQL:
+
+- **Attempt identity and lease.** `Video.processingAttemptId` and `processingLeaseExpiresAt` record
+  the one attempt that owns the generation. Acquisition is one atomic `UPDATE` that succeeds only
+  when no attempt owns the generation or the owner's lease expired (a takeover). All lease arithmetic
+  uses the database clock, so skewed worker hosts cannot steal a live lease. A worker that finds a
+  live lease fails with a retryable `AttemptBusyError` and never fails the video on the owner's
+  behalf.
+- **Renewal.** A heartbeat renews the lease with a conditional `UPDATE` (the attempt must still
+  match). Before uploading and before committing, the worker performs a verified renewal, which
+  doubles as an ownership check. A former owner's renewal reports "lost" and the execution stops with
+  a non-retryable `AttemptOwnershipLostError`. Renewal stops after `WORKER_ATTEMPT_MAX_SECONDS`
+  (default 3 hours) so a wedged attempt becomes recoverable; `WORKER_LEASE_SECONDS` (default 60) sets
+  the lease length. FFmpeg and uploads never run inside a database transaction.
+- **Fenced publication.** The READY transition is the first statement of a short transaction and is
+  fenced by status, generation, **and** attempt ID. In the same transaction it stores
+  `committedAttemptId`, clears the lease, and publishes the asset rows. If the compare-and-set loses,
+  the transaction rolls back and nothing is published.
+- **Fenced failure.** `fail()` moves to FAILED only for the owning attempt and deletes storage
+  _after_ that update succeeds, and then only the failing attempt's own prefix. A late failure from a
+  superseded attempt, or after READY, changes nothing and deletes nothing.
+- **Scoped cleanup.** A losing or cancelled attempt removes only its own `attempts/{attemptId}/`
+  objects, and only after confirming the database does not record it as committed. If that state
+  cannot be read, nothing is deleted: an orphan is recoverable, a deleted rendition is not. After a
+  successful commit the winner sweeps legacy layouts, earlier generations, and losing attempts.
+
+Network/storage/database failures are retryable; invalid probe output, unavailable media executables,
+and deterministic FFmpeg failures are non-retryable. A retryable failure releases the lease so the next
+delivery can start immediately. The video moves to FAILED only for a non-retryable error or after retry
+exhaustion. Failure of one required rendition fails the entire attempt; no partial ladder is marked
+READY. Every attempt removes its unique local working directory, including all rendition directories
+and the master, in `finally`.
 
 Prefix cleanup checks the per-key `Errors` returned by every S3 `DeleteObjects` request. The API keeps
 a video in DELETING when any key failed; worker best-effort cleanup logs and propagates the partial
@@ -145,8 +191,31 @@ idempotent. This is deliberately one table and one bounded periodic publisher fo
 asynchronous domain pipeline; it is not a generic event bus.
 
 Published outbox rows remain available for 30 days, then a daily best-effort task deletes them.
-Unpublished rows are excluded from cleanup, so retention cannot discard work that still needs to be
-queued.
+Cleanup excludes unpublished rows **and** rows whose generation is still UPLOADED or PROCESSING, so
+retention can never discard evidence that unfinished work needs for recovery.
+
+### Reconciling stranded generations
+
+Redis is disposable, and BullMQ can fail a job (a terminal stall) outside the worker's own error
+handling, so a database row can say "work is pending" while nothing is running. Each API instance runs
+a small, bounded `ProcessingReconciler` (every 30 seconds, at most 20 generations per scan, oldest
+first). It considers a _published_ outbox event whose generation is still UPLOADED/PROCESSING, is
+older than a grace period, and has **no valid attempt lease**; a generation with a live lease is never
+touched. Each candidate is claimed with an atomic `lastRecoveredAt` update, so only one API instance
+inspects it per cooldown window, and then BullMQ is asked for the job's state:
+
+| BullMQ job                                                    | Database action                                                                                                                                                        |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| waiting, delayed, or active                                   | none; the work is healthy (or BullMQ's stall detection owns it)                                                                                                        |
+| failed (retained)                                             | conditionally move to `FAILED`, clear the lease, and remove the dead attempt's objects; the owner can now use Retry                                                    |
+| missing, or a retained `completed` job that no longer matches | revoke the expired owner, then re-publish idempotently (removing a retained finished job, which a plain `add` would silently ignore); counts toward `recoveryAttempts` |
+| missing after `recoveryAttempts` reached the bound (5)        | conditionally move to `FAILED` so the owner can retry                                                                                                                  |
+
+Revoking the expired owner first means a delayed former attempt can no longer renew or publish after
+recovery. The worker also handles BullMQ's `failed` event for terminal failures (exhausted retries or
+stalls) with the same lease-conditional `FAILED` update, so recovery is normally immediate and the
+reconciler is the backstop. Outcomes are logged as `video.processing.reconciled` with the video ID,
+generation, correlation ID, job state, and outcome only.
 
 ```text
 stale job generation=1
@@ -158,21 +227,22 @@ DB processingGeneration=2
 SKIP successfully
 ```
 
-The worker checks generation and state before expensive work, before generated upload, and before
-the final READY transaction. The final update also compare-and-sets PROCESSING plus the generation.
-A stale job or stale terminal failure therefore cannot change the newer run. Lost ownership triggers
-best-effort cleanup of only that job's generation. A successful run best-effort removes older
-generation prefixes but never the ORIGINAL.
+The worker checks generation and state before acquiring, then verifies attempt ownership before
+generated upload and before the final READY transaction, whose update compare-and-sets PROCESSING,
+the generation, and the attempt. A stale job or stale terminal failure therefore cannot change the
+newer run. Lost ownership triggers best-effort cleanup of only that attempt's own objects. A
+successful run best-effort removes older layouts, generations, and losing attempts but never the
+ORIGINAL.
 
 Visibility may change while FFmpeg is running. Processing completion first compare-and-sets READY,
 then conditionally initializes `publishedAt` from the current database visibility. The API's publish
 path performs the complementary check, so either ordering of the race leaves READY/PUBLIC published.
 
-The worker checks PROCESSING before generated upload and again through the final compare-and-set. If
-DELETING wins, that generated generation prefix is removed and READY is never published. Upload
-intents are capped by `MAX_UPLOAD_SIZE_BYTES` (2 GiB by default), the worker rejects media longer than
-two hours before encoding, and each media subprocess retains its 15-minute timeout. These are
-laptop-oriented guardrails.
+The worker verifies ownership before generated upload and again through the final compare-and-set. If
+DELETING wins, the attempt's own prefix is removed and READY is never published. Upload intents are
+capped by `MAX_UPLOAD_SIZE_BYTES` (2 GiB by default), the worker rejects media longer than two hours
+before encoding, and each media subprocess retains its 15-minute timeout. These are laptop-oriented
+guardrails.
 
 ## Worker health
 
@@ -193,7 +263,13 @@ $env:RUN_MEDIA_E2E='true'; pnpm test:e2e:media
 
 The media integration suite generates 720p and 360p sources, validates the real master, variants,
 segments, audio-less behavior, and FFprobe playback, and drives a FAILED generation 1 through a real
-generation-2 pipeline to READY with isolated authoritative assets. The browser test generates a
-two-second 720p MP4, uploads it through the signed URL, waits for READY, verifies all three master
-variants, plays it,
-deletes the video, and removes the fixture. No media binary is committed to the repository.
+generation-2 pipeline to READY with isolated, attempt-scoped authoritative assets. The browser test
+generates a two-second 720p MP4, uploads it through the presigned POST policy, waits for READY,
+verifies all three master variants, plays it, deletes the video, and removes the fixture. No media
+binary is committed to the repository.
+
+The remaining integration suites run against real PostgreSQL, Redis, and MinIO and need no FFmpeg:
+attempt ownership (`apps/worker/test/attempt-ownership.integration.test.ts`, with a deterministic
+fake media toolchain), and upload admission, upload completion, and processing reconciliation
+(`apps/api/test/*.integration.test.ts`). Use disposable services. The reconciliation suite uses the
+shared BullMQ queue name, so it must not run while a worker is consuming that queue.

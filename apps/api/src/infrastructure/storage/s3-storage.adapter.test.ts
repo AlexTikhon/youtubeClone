@@ -62,3 +62,70 @@ describe('S3StorageAdapter error boundary', () => {
     });
   });
 });
+
+describe('S3StorageAdapter upload admission policy', () => {
+  function decodePolicy(fields: Record<string, string>) {
+    return JSON.parse(
+      Buffer.from(fields.Policy!, 'base64').toString('utf8'),
+    ) as { expiration: string; conditions: unknown[] };
+  }
+
+  it('binds the upload to its exact key, content type, size and lifetime', async () => {
+    const adapter = new S3StorageAdapter({
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_REGION: 'us-east-1',
+      S3_FORCE_PATH_STYLE: true,
+      S3_ACCESS_KEY: 'test',
+      S3_SECRET_KEY: 'test',
+    } as never);
+    const before = Date.now();
+
+    const policy = await adapter.createUploadPolicy({
+      bucket: 'video-originals',
+      objectKey: 'originals/video/file.mp4',
+      contentType: 'video/mp4',
+      sizeBytes: 1234n,
+      expiresInSeconds: 900,
+    });
+
+    expect(policy.url).toBe('http://localhost:9000/video-originals');
+    expect(policy.fields).toMatchObject({
+      key: 'originals/video/file.mp4',
+      'Content-Type': 'video/mp4',
+    });
+    const { conditions, expiration } = decodePolicy(policy.fields);
+    expect(conditions).toEqual(
+      expect.arrayContaining([
+        { bucket: 'video-originals' },
+        { key: 'originals/video/file.mp4' },
+        { 'Content-Type': 'video/mp4' },
+        ['content-length-range', 1234, 1234],
+      ]),
+    );
+    const lifetimeMs = Date.parse(expiration) - before;
+    expect(lifetimeMs).toBeGreaterThan(890_000);
+    expect(lifetimeMs).toBeLessThanOrEqual(901_000);
+    adapter.onApplicationShutdown();
+  });
+
+  it('classifies a signing failure as storage unavailable', async () => {
+    const adapter = new S3StorageAdapter({
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_REGION: 'us-east-1',
+      S3_FORCE_PATH_STYLE: true,
+      S3_ACCESS_KEY: 'test',
+      S3_SECRET_KEY: 'test',
+    } as never);
+
+    await expect(
+      adapter.createUploadPolicy({
+        bucket: 'video-originals',
+        objectKey: 'k',
+        contentType: 'video/mp4',
+        sizeBytes: -1n,
+        expiresInSeconds: 900,
+      }),
+    ).rejects.toBeInstanceOf(ObjectStorageUnavailableError);
+    adapter.onApplicationShutdown();
+  });
+});

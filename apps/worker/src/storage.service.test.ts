@@ -56,28 +56,33 @@ describe('StorageService ABR upload', () => {
         await writeFile(join(renditionDirectory, 'segment000.ts'), 'segment');
       }
 
-      const result = await service.uploadHls('video-id', 2, directory, [
-        '360p',
-        '480p',
-      ]);
+      const result = await service.uploadHls(
+        'video-id',
+        2,
+        'attempt-id',
+        directory,
+        ['360p', '480p'],
+      );
 
       expect(result.masterManifestKey).toBe(
-        'videos/video-id/generations/2/hls/master.m3u8',
+        'videos/video-id/generations/2/attempts/attempt-id/hls/master.m3u8',
       );
       expect(result.renditions).toEqual([
         expect.objectContaining({
           name: '360p',
-          manifestKey: 'videos/video-id/generations/2/hls/360p/index.m3u8',
+          manifestKey:
+            'videos/video-id/generations/2/attempts/attempt-id/hls/360p/index.m3u8',
           segmentCount: 1,
         }),
         expect.objectContaining({
           name: '480p',
-          manifestKey: 'videos/video-id/generations/2/hls/480p/index.m3u8',
+          manifestKey:
+            'videos/video-id/generations/2/attempts/attempt-id/hls/480p/index.m3u8',
           segmentCount: 1,
         }),
       ]);
       expect(uploadFile.mock.calls.at(-1)?.[1]).toBe(
-        'videos/video-id/generations/2/hls/master.m3u8',
+        'videos/video-id/generations/2/attempts/attempt-id/hls/master.m3u8',
       );
     } finally {
       service.onApplicationShutdown();
@@ -120,5 +125,63 @@ describe('StorageService generated cleanup', () => {
       failureCount: 1,
       errorCodes: ['AccessDenied'],
     });
+  });
+});
+
+describe('StorageService attempt-scoped cleanup', () => {
+  function serviceWithListing(keys: string[]) {
+    const service = new StorageService();
+    const send = vi.fn(async (command: { constructor: { name: string } }) =>
+      command.constructor.name === 'ListObjectsV2Command'
+        ? { Contents: keys.map((Key) => ({ Key })) }
+        : {},
+    );
+    (service as unknown as { client: { send: typeof send } }).client = {
+      send,
+    };
+    return { service, send };
+  }
+  const deletedKeys = (send: ReturnType<typeof vi.fn>) =>
+    send.mock.calls
+      .map(([command]) => command as { input: Record<string, unknown> })
+      .filter((command) => 'Delete' in command.input)
+      .flatMap(
+        (command) =>
+          (command.input.Delete as { Objects: Array<{ Key: string }> }).Objects,
+      )
+      .map((object) => object.Key);
+
+  it('removes only the requested attempt prefix', async () => {
+    const { service, send } = serviceWithListing([]);
+
+    await service.removeAttempt('video-id', 2, 'loser');
+
+    const prefixes = send.mock.calls
+      .map(([command]) => command as { input: { Prefix?: string } })
+      .map((command) => command.input.Prefix);
+    expect(prefixes).toEqual([
+      'videos/video-id/generations/2/attempts/loser/',
+      'videos/video-id/generations/2/attempts/loser/',
+    ]);
+  });
+
+  it('keeps the committed attempt while sweeping legacy, older and losing output', async () => {
+    const committed = 'videos/video-id/generations/2/attempts/winner/';
+    const { service, send } = serviceWithListing([
+      `${committed}hls/master.m3u8`,
+      `${committed}thumbnail/thumbnail.jpg`,
+      'videos/video-id/generations/2/attempts/loser/hls/master.m3u8',
+      'videos/video-id/generations/1/hls/master.m3u8',
+      'videos/video-id/hls/720p/index.m3u8',
+    ]);
+
+    await service.removeObsoleteGenerated('video-id', 2, 'winner');
+
+    const deleted = new Set(deletedKeys(send));
+    expect([...deleted].sort()).toEqual([
+      'videos/video-id/generations/1/hls/master.m3u8',
+      'videos/video-id/generations/2/attempts/loser/hls/master.m3u8',
+      'videos/video-id/hls/720p/index.m3u8',
+    ]);
   });
 });

@@ -92,31 +92,37 @@ model Channel {
 }
 
 model Video {
-  id                   String             @id @default(uuid()) @db.Uuid
-  channelId            String             @db.Uuid
-  title                String             @db.VarChar(120)
-  description          String?            @db.VarChar(5000)
-  status               VideoStatus        @default(DRAFT)
-  visibility           VideoVisibility    @default(PRIVATE)
-  durationSeconds      Int?
-  width                Int?
-  height               Int?
-  publishedAt          DateTime?
-  failureReason        String?            @db.VarChar(500)
-  processingGeneration Int                @default(0)
-  processingStartedAt  DateTime?
-  processingFinishedAt DateTime?
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
-  channel              Channel            @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  assets               VideoAsset[]
-  upload               VideoUpload?
-  likes                VideoLike[]
-  comments             Comment[]
-  views                VideoView[]
-  watchHistory         WatchHistory[]
-  playlistItems        PlaylistItem[]
-  processingOutbox     ProcessingOutbox[]
+  id                       String             @id @default(uuid()) @db.Uuid
+  channelId                String             @db.Uuid
+  title                    String             @db.VarChar(120)
+  description              String?            @db.VarChar(5000)
+  status                   VideoStatus        @default(DRAFT)
+  visibility               VideoVisibility    @default(PRIVATE)
+  durationSeconds          Int?
+  width                    Int?
+  height                   Int?
+  publishedAt              DateTime?
+  failureReason            String?            @db.VarChar(500)
+  processingGeneration     Int                @default(0)
+  processingStartedAt      DateTime?
+  processingFinishedAt     DateTime?
+  /// Opaque identity of the worker attempt that currently owns this generation.
+  processingAttemptId      String?            @db.Uuid
+  /// Database-clock deadline after which another attempt may take over.
+  processingLeaseExpiresAt DateTime?
+  /// The attempt whose generated assets are authoritative once the video is READY.
+  committedAttemptId       String?            @db.Uuid
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+  channel                  Channel            @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  assets                   VideoAsset[]
+  upload                   VideoUpload?
+  likes                    VideoLike[]
+  comments                 Comment[]
+  views                    VideoView[]
+  watchHistory             WatchHistory[]
+  playlistItems            PlaylistItem[]
+  processingOutbox         ProcessingOutbox[]
 
   @@index([channelId, createdAt(sort: Desc)])
   @@index([status, updatedAt])
@@ -124,16 +130,19 @@ model Video {
 }
 
 model ProcessingOutbox {
-  id              String    @id @default(uuid()) @db.Uuid
-  videoId         String    @db.Uuid
-  generation      Int
-  originalAssetId String    @db.Uuid
-  correlationId   String    @db.VarChar(100)
-  createdAt       DateTime  @default(now())
-  publishedAt     DateTime?
-  attempts        Int       @default(0)
-  lastError       String?   @db.VarChar(500)
-  video           Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  id               String    @id @default(uuid()) @db.Uuid
+  videoId          String    @db.Uuid
+  generation       Int
+  originalAssetId  String    @db.Uuid
+  correlationId    String    @db.VarChar(100)
+  createdAt        DateTime  @default(now())
+  publishedAt      DateTime?
+  attempts         Int       @default(0)
+  lastError        String?   @db.VarChar(500)
+  /// Bounded recovery bookkeeping for published events whose queue job was lost.
+  recoveryAttempts Int       @default(0)
+  lastRecoveredAt  DateTime?
+  video            Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
 
   @@unique([videoId, generation])
   @@index([publishedAt, createdAt])
@@ -229,6 +238,8 @@ model VideoAsset {
   bitrateKbps     Int?
   durationSeconds Int?
   metadata        Json?
+  /// Generated assets carry the attempt that produced them; legacy rows are null.
+  attemptId       String?        @db.Uuid
   createdAt       DateTime       @default(now())
   video           Video          @relation(fields: [videoId], references: [id], onDelete: Cascade)
 

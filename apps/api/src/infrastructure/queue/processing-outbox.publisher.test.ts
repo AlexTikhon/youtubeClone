@@ -103,20 +103,21 @@ describe('ProcessingOutboxPublisher', () => {
     await expect(publisher.publishPending()).resolves.toBeUndefined();
   });
 
-  it('removes only published events older than the retention window', async () => {
-    const deleteMany = vi.fn().mockResolvedValue({ count: 2 });
+  it('removes only published events older than the retention window and never evidence for unfinished generations', async () => {
+    const executeRaw = vi.fn().mockResolvedValue(2);
     const publisher = new ProcessingOutboxPublisher(
-      { processingOutbox: { deleteMany } } as never,
+      { $executeRaw: executeRaw } as never,
       {} as never,
     );
     const now = new Date('2026-08-17T12:00:00.000Z');
 
     await publisher.cleanupPublished(now);
 
-    expect(deleteMany).toHaveBeenCalledWith({
-      where: {
-        publishedAt: { lt: new Date('2026-07-18T12:00:00.000Z') },
-      },
-    });
+    const [strings, cutoff] = executeRaw.mock.calls[0] as [string[], Date];
+    expect(cutoff).toEqual(new Date('2026-07-18T12:00:00.000Z'));
+    const sql = strings.join('?');
+    expect(sql).toContain('"publishedAt" <');
+    expect(sql).toContain('NOT EXISTS');
+    expect(sql).toContain("IN ('UPLOADED', 'PROCESSING')");
   });
 });
