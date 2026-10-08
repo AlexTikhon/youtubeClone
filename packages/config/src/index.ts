@@ -62,13 +62,27 @@ export const workerEnvironmentSchema = infrastructureSchema.extend({
     .default(7_200),
   /** How long an attempt owns a generation without renewing its lease. */
   WORKER_LEASE_SECONDS: z.coerce.number().int().min(5).max(3_600).default(60),
-  /** Hard ceiling after which an attempt stops renewing and is recoverable. */
+  /** Hard ceiling after which an attempt's work is cancelled. */
   WORKER_ATTEMPT_MAX_SECONDS: z.coerce
     .number()
     .int()
     .min(60)
     .max(86_400)
     .default(10_800),
+  /** Bound for each attempt's storage cleanup, which runs after cancellation. */
+  WORKER_CLEANUP_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(600)
+    .default(20),
+  /** How long shutdown lets running attempts finish before cancelling them. */
+  WORKER_SHUTDOWN_GRACE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(600)
+    .default(15),
 });
 
 export const webEnvironmentSchema = z.object({

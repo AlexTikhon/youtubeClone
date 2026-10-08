@@ -57,7 +57,9 @@ generation still equals the video row. Executions of one generation are told apa
 identity with a renewable database lease** (`Video.processingAttemptId` /
 `processingLeaseExpiresAt`); each attempt writes under its own `attempts/{attemptId}/` prefix, and
 only the READY transaction, fenced by generation and attempt ID, makes an attempt authoritative
-(`committedAttemptId`). This
+(`committedAttemptId`) while its lease is unexpired. An attempt's
+work is cancelled (processes killed, transfers aborted) when its deadline passes, it loses ownership,
+or the worker shuts down. This
 resolves the PostgreSQL/Redis dual-write gap, delayed old-job races, and overlapping executions of one
 generation without introducing a message broker or a generic workflow system.
 

@@ -31,7 +31,9 @@ A duplicate that sees READY (or FAILED) logs `duplicate_skipped`. Executions of 
 that overlap are told apart by an **attempt identity with a renewable database lease**: acquisition is
 one atomic update, so a second execution that finds a live lease fails with a retryable
 `AttemptBusyError` and never touches the owner's work. If the first lease expired (a stalled or slow
-worker), the second execution takes over and the former owner becomes the loser.
+worker), the second execution takes over and the former owner becomes the loser. The former owner's
+next heartbeat reports the loss, which **cancels its work**: FFmpeg is terminated and transfers are
+aborted rather than running on to a pointless finish.
 
 **How does it recover?** Every attempt writes under its own `attempts/{attemptId}/` prefix. The READY
 transition is fenced by generation **and** attempt ID and publishes the asset rows in the same
@@ -40,9 +42,10 @@ is non-retryable; its failure recording is a no-op because it no longer owns the
 deletes only its own unpublished objects. A late `fail()` after READY changes no lifecycle state and
 deletes nothing.
 
-**Remaining limitation:** Duplicate execution can still waste download/FFmpeg CPU before the next
-ownership check; the lease stops a loser from _publishing_, not from encoding. This is idempotent
-at-least-once behavior, not distributed exactly-once execution.
+**Remaining limitation:** A loser keeps working until its next heartbeat (default every 20 seconds)
+notices the loss, so some CPU is still wasted; the lease stops a loser from _publishing_, and
+cancellation limits how long it encodes. This is idempotent at-least-once behavior, not distributed
+exactly-once execution.
 
 ## 3. The worker crashes halfway through FFmpeg or upload
 
@@ -167,15 +170,24 @@ refetch/retry. In-memory request context and rate-limit guard execution for that
 **What fails?** Active FFmpeg and local temporary work stop; the BullMQ consumer disconnects.
 
 **What happens?** The video can remain PROCESSING, while the durable queue and PostgreSQL state remain.
-On a graceful shutdown, the worker closes its BullMQ connection; on an abrupt exit, BullMQ must detect
-and recover the stalled job.
+On a graceful shutdown, the worker cancels its attempts after a grace period and releases their
+leases; on an abrupt exit, BullMQ must detect and recover the stalled job.
 
 **How does it recover?** After the dead attempt's lease expires, the new worker takes the generation
 over with a new attempt and reruns the whole pipeline under a fresh output prefix. A graceful shutdown
-releases nothing early; the lease simply runs out. If BullMQ gave up on the job, scenario 13 applies.
+releases the lease (see below); after an abrupt exit the lease simply runs out. If BullMQ gave up on
+the job, scenario 13 applies.
 
 **Remaining limitation:** Recovery time depends on the lease length and BullMQ stalled-job detection.
 Abrupt local temp output is not explicitly swept on startup.
+
+**Graceful shutdown (SIGTERM).** The worker stops taking jobs, gives running attempts
+`WORKER_SHUTDOWN_GRACE_SECONDS` (default 15) to finish, then cancels them: FFmpeg children are
+terminated and reaped, transfers are aborted, the attempt cleans up under its own bound, and the lease
+is released so another worker can start at once. If something still has not settled after the cleanup
+bound plus 5 seconds, the BullMQ worker is force-closed and the process exits; that attempt falls back
+to the lease-expiry path above. Keep the container stop period above grace + cleanup + 5 s (the
+bundled compose file uses 60 s).
 
 ## 11. The browser closes during direct upload
 

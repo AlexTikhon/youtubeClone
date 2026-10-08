@@ -207,3 +207,116 @@ describe('VideoWorkerService terminal BullMQ failures', () => {
     expect(pipeline.failStranded).not.toHaveBeenCalled();
   });
 });
+
+describe('VideoWorkerService bounded shutdown', () => {
+  function shutdownHarness(pipeline: object) {
+    const worker = {
+      pause: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new VideoWorkerService(pipeline as never, {
+      shutdownGraceMs: 80,
+      settleTimeoutMs: 150,
+      closeTimeoutMs: 100,
+    });
+    (service as unknown as { worker: typeof worker }).worker = worker;
+    const process = (
+      service as unknown as {
+        process(job: unknown): Promise<void>;
+      }
+    ).process.bind(service);
+    return { service, worker, process };
+  }
+
+  /** An execution that, like real I/O, settles only because its signal aborted. */
+  function cancellablePipeline() {
+    const seen: { signal?: AbortSignal } = {};
+    return {
+      seen,
+      execute: vi.fn(
+        (
+          _jobId: string,
+          _input: unknown,
+          _attempt: number,
+          signal?: AbortSignal,
+        ) => {
+          seen.signal = signal;
+          return new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener(
+              'abort',
+              () =>
+                reject(failing(signal.reason as ProcessingError, 'attempt-1')),
+              { once: true },
+            );
+          });
+        },
+      ),
+      fail: vi.fn().mockResolvedValue(true),
+      release: vi.fn().mockResolvedValue(true),
+    };
+  }
+
+  it('lets a job that finishes within the grace period complete uncancelled', async () => {
+    const pipeline = {
+      execute: vi.fn(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 30)),
+      ),
+      fail: vi.fn(),
+      release: vi.fn(),
+    };
+    const { service, worker, process } = shutdownHarness(pipeline);
+    const running = process(createJob(0));
+
+    await service.onApplicationShutdown();
+
+    await expect(running).resolves.toBeUndefined();
+    const signal = pipeline.execute.mock.calls[0]![3] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    expect(worker.pause).toHaveBeenCalledWith(true);
+    expect(worker.close).toHaveBeenCalledWith(false);
+  });
+
+  it('cancels running attempts after the grace period and releases their lease', async () => {
+    const pipeline = cancellablePipeline();
+    const { service, worker, process } = shutdownHarness(pipeline);
+    const running = process(createJob(0)).catch((error: unknown) => error);
+
+    const startedAt = performance.now();
+    await service.onApplicationShutdown();
+
+    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(70);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(pipeline.seen.signal?.aborted).toBe(true);
+    await expect(running).resolves.toMatchObject({
+      name: 'WorkerShutdownError',
+      retryable: true,
+    });
+    // Retryable and not exhausted: handed back for immediate retry elsewhere.
+    expect(pipeline.release).toHaveBeenCalledWith({
+      videoId: data.videoId,
+      generation: 1,
+      attemptId: 'attempt-1',
+    });
+    expect(worker.close).toHaveBeenCalledWith(false);
+  });
+
+  it('gives up on work that ignores cancellation and force-closes the worker', async () => {
+    const pipeline = {
+      // Never settles, whatever the signal says: a wedged operation.
+      execute: vi.fn(() => new Promise<void>(() => {})),
+      fail: vi.fn(),
+      release: vi.fn(),
+    };
+    const { service, worker, process } = shutdownHarness(pipeline);
+    void process(createJob(0));
+    // A hung close must not hang shutdown either.
+    worker.close.mockImplementation(() => new Promise<void>(() => {}));
+
+    const startedAt = performance.now();
+    await service.onApplicationShutdown();
+
+    // grace (80) + settle (150) + close (100), with slack for timers.
+    expect(performance.now() - startedAt).toBeLessThan(1_500);
+    expect(worker.close).toHaveBeenCalledWith(true);
+  });
+});

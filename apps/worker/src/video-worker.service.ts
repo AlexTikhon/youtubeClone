@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type {
   OnApplicationBootstrap,
   OnApplicationShutdown,
@@ -14,7 +14,20 @@ import {
 import { workerEnvironment } from './config.js';
 import { processVideoJobSchema } from './video-job.schema.js';
 import { VideoProcessingPipeline } from './video-processing.pipeline.js';
-import { asProcessingError } from './processing-error.js';
+import { WorkerShutdownError, asProcessingError } from './processing-error.js';
+
+export interface VideoWorkerOptions {
+  queueName?: string;
+  concurrency?: number;
+  /** How long shutdown lets running attempts finish before cancelling them. */
+  shutdownGraceMs?: number;
+  /** How long cancelled attempts get to settle (cleanup included). */
+  settleTimeoutMs?: number;
+  /** How long closing the BullMQ worker may take. */
+  closeTimeoutMs?: number;
+}
+
+export const VIDEO_WORKER_OPTIONS = Symbol('VIDEO_WORKER_OPTIONS');
 
 @Injectable()
 export class VideoWorkerService
@@ -22,28 +35,46 @@ export class VideoWorkerService
 {
   private readonly logger = new Logger(VideoWorkerService.name);
   private worker?: Worker<ProcessVideoJob>;
+  private readonly active = new Set<Promise<void>>();
+  private readonly shutdown = new AbortController();
+  private readonly options: Required<VideoWorkerOptions>;
 
   constructor(
     @Inject(VideoProcessingPipeline)
     private readonly pipeline: VideoProcessingPipeline,
-  ) {}
+    @Optional()
+    @Inject(VIDEO_WORKER_OPTIONS)
+    options: VideoWorkerOptions = {},
+  ) {
+    this.options = {
+      queueName: options.queueName ?? VIDEO_PROCESSING_QUEUE_NAME,
+      concurrency: options.concurrency ?? workerEnvironment.WORKER_CONCURRENCY,
+      shutdownGraceMs:
+        options.shutdownGraceMs ??
+        workerEnvironment.WORKER_SHUTDOWN_GRACE_SECONDS * 1_000,
+      settleTimeoutMs:
+        options.settleTimeoutMs ??
+        workerEnvironment.WORKER_CLEANUP_TIMEOUT_SECONDS * 1_000 + 5_000,
+      closeTimeoutMs: options.closeTimeoutMs ?? 5_000,
+    };
+  }
 
   onApplicationBootstrap(): void {
     this.worker = new Worker<ProcessVideoJob>(
-      VIDEO_PROCESSING_QUEUE_NAME,
+      this.options.queueName,
       (job) => this.process(job),
       {
         connection: {
           url: workerEnvironment.REDIS_URL,
           maxRetriesPerRequest: null,
         },
-        concurrency: workerEnvironment.WORKER_CONCURRENCY,
+        concurrency: this.options.concurrency,
       },
     );
     this.worker.on('ready', () =>
       this.logger.log({
         event: 'worker.ready',
-        queue: VIDEO_PROCESSING_QUEUE_NAME,
+        queue: this.options.queueName,
       }),
     );
     this.worker.on('failed', (job, error) => {
@@ -57,8 +88,62 @@ export class VideoWorkerService
     );
   }
 
+  /**
+   * Bounded shutdown. Stops taking new jobs, lets running attempts finish for
+   * the grace period, then cancels them (which terminates FFmpeg and aborts
+   * transfers) and waits for them to settle. Work that still ignores
+   * cancellation after that is abandoned: the worker is force-closed so the
+   * process can exit, and its attempt lease expires for recovery.
+   */
   async onApplicationShutdown(): Promise<void> {
-    await this.worker?.close();
+    const worker = this.worker;
+    if (!worker) return;
+    await this.bounded(worker.pause(true), this.options.closeTimeoutMs);
+    let settled = await this.activeSettledWithin(this.options.shutdownGraceMs);
+    if (!settled) {
+      this.logger.warn({
+        event: 'worker.shutdown.cancelling_attempts',
+        activeAttempts: this.active.size,
+      });
+      this.shutdown.abort(new WorkerShutdownError());
+      settled = await this.activeSettledWithin(this.options.settleTimeoutMs);
+    }
+    if (!settled) {
+      this.logger.error({
+        event: 'worker.shutdown.abandoned_attempts',
+        activeAttempts: this.active.size,
+      });
+    }
+    await this.bounded(worker.close(!settled), this.options.closeTimeoutMs);
+  }
+
+  private async activeSettledWithin(ms: number): Promise<boolean> {
+    if (this.active.size === 0) return true;
+    return this.bounded(
+      Promise.allSettled([...this.active]).then(() => true as const),
+      ms,
+    ).then((result) => result === true);
+  }
+
+  /** Resolves with the promise's value, or undefined after `ms`; never rejects. */
+  private bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), ms);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          this.logger.warn({
+            event: 'worker.shutdown.step_failed',
+            error: error instanceof Error ? error.message : String(error),
+          });
+          resolve(undefined);
+        },
+      );
+    });
   }
 
   async checkReady(): Promise<void> {
@@ -121,7 +206,16 @@ export class VideoWorkerService
     }
   }
 
-  private async process(job: Job<ProcessVideoJob>): Promise<void> {
+  /** Tracks the execution so shutdown can wait for it, and free the slot. */
+  private process(job: Job<ProcessVideoJob>): Promise<void> {
+    const running = this.runJob(job);
+    this.active.add(running);
+    const forget = () => this.active.delete(running);
+    running.then(forget, forget);
+    return running;
+  }
+
+  private async runJob(job: Job<ProcessVideoJob>): Promise<void> {
     const input = processVideoJobSchema.parse(job.data);
     const startedAt = performance.now();
     this.logger.log({
@@ -137,6 +231,7 @@ export class VideoWorkerService
         job.id ?? 'unknown',
         input,
         job.attemptsMade + 1,
+        this.shutdown.signal,
       );
       this.logger.log({
         event: 'video.processing.completed',

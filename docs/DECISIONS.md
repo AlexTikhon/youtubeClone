@@ -65,8 +65,10 @@ by generation and attempt ID. Output lives under a unique per-attempt prefix, an
 is recorded (`committedAttemptId`, `VideoAsset.attemptId`) so media selection is explicit. A lease in
 the video row keeps the design inside the existing modular monolith: no lock service, no workflow
 framework, and transactions stay short because FFmpeg and uploads never run inside one. The lease uses
-the database clock and a heartbeat, and stops renewing after a hard ceiling so a wedged attempt is
-recoverable. The cost is a heartbeat per active attempt and four nullable columns; the benefit is that
+the database clock and a heartbeat; renewal and READY publication both require an unexpired lease, and
+each attempt has one cancellation signal (hard deadline, ownership loss, unconfirmable lease, shutdown)
+that is propagated into S3 requests, streams, and FFmpeg child processes, so a wedged attempt actually
+stops and frees its worker slot instead of being abandoned. The cost is a heartbeat per active attempt and four nullable columns; the benefit is that
 a slow or partitioned worker is merely a loser, never a corrupting writer.
 
 ## Reconciliation of stranded generations

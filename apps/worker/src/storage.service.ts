@@ -49,11 +49,15 @@ export class StorageService implements OnApplicationShutdown {
     objectKey: string,
     destination: string,
     expectedSizeBytes: bigint | null,
+    signal?: AbortSignal,
   ): Promise<void> {
+    let body: Readable | undefined;
     try {
       const result = await this.client.send(
         new GetObjectCommand({ Bucket: bucket, Key: objectKey }),
+        { abortSignal: signal },
       );
+      if (result.Body instanceof Readable) body = result.Body;
       if (
         expectedSizeBytes !== null &&
         (result.ContentLength === undefined ||
@@ -68,8 +72,10 @@ export class StorageService implements OnApplicationShutdown {
       }
       if (!(result.Body instanceof Readable))
         throw new Error('Storage did not return a Node.js stream');
-      await pipeline(result.Body, createWriteStream(destination));
+      await pipeline(result.Body, createWriteStream(destination), { signal });
     } catch (error) {
+      // Cancellation outranks whatever the interrupted transfer reported.
+      if (signal?.aborted) throw signal.reason;
       if (error instanceof ProcessingError) throw error;
       throw new ProcessingError(
         `Could not download original ${bucket}/${objectKey}`,
@@ -77,6 +83,8 @@ export class StorageService implements OnApplicationShutdown {
         'The original video could not be read from storage',
         { cause: error },
       );
+    } finally {
+      body?.destroy();
     }
   }
 
@@ -97,6 +105,7 @@ export class StorageService implements OnApplicationShutdown {
     generation: number,
     attemptId: string,
     sourcePath: string,
+    signal?: AbortSignal,
   ): Promise<{ bucket: string; objectKey: string; sizeBytes: bigint }> {
     const bucket = workerEnvironment.S3_BUCKET_THUMBNAILS;
     const objectKey = `${attemptPrefix(videoId, generation, attemptId)}thumbnail/thumbnail.jpg`;
@@ -105,6 +114,7 @@ export class StorageService implements OnApplicationShutdown {
       objectKey,
       sourcePath,
       'image/jpeg',
+      signal,
     );
     return { bucket, objectKey, sizeBytes };
   }
@@ -115,6 +125,7 @@ export class StorageService implements OnApplicationShutdown {
     attemptId: string,
     sourceDirectory: string,
     renditionNames: readonly string[],
+    signal?: AbortSignal,
   ): Promise<{
     bucket: string;
     masterManifestKey: string;
@@ -164,6 +175,7 @@ export class StorageService implements OnApplicationShutdown {
             `${renditionPrefix}${fileName}`,
             join(renditionDirectory, fileName),
             'video/mp2t',
+            signal,
           );
         }
         const manifestKey = `${renditionPrefix}index.m3u8`;
@@ -172,6 +184,7 @@ export class StorageService implements OnApplicationShutdown {
           manifestKey,
           join(renditionDirectory, 'index.m3u8'),
           'application/vnd.apple.mpegurl',
+          signal,
         );
         renditions.push({
           name,
@@ -186,6 +199,7 @@ export class StorageService implements OnApplicationShutdown {
         masterManifestKey,
         join(sourceDirectory, 'master.m3u8'),
         'application/vnd.apple.mpegurl',
+        signal,
       );
       return {
         bucket,
@@ -195,6 +209,7 @@ export class StorageService implements OnApplicationShutdown {
         renditions,
       };
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       if (error instanceof ProcessingError) throw error;
       throw new ProcessingError(
         'Could not upload generated HLS assets',
@@ -210,11 +225,22 @@ export class StorageService implements OnApplicationShutdown {
     videoId: string,
     generation: number,
     attemptId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const prefix = attemptPrefix(videoId, generation, attemptId);
     await Promise.all([
-      this.deletePrefix(workerEnvironment.S3_BUCKET_STREAMS, prefix),
-      this.deletePrefix(workerEnvironment.S3_BUCKET_THUMBNAILS, prefix),
+      this.deletePrefix(
+        workerEnvironment.S3_BUCKET_STREAMS,
+        prefix,
+        undefined,
+        signal,
+      ),
+      this.deletePrefix(
+        workerEnvironment.S3_BUCKET_THUMBNAILS,
+        prefix,
+        undefined,
+        signal,
+      ),
     ]);
   }
 
@@ -226,6 +252,7 @@ export class StorageService implements OnApplicationShutdown {
     videoId: string,
     committedGeneration: number,
     committedAttemptId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const keep = attemptPrefix(
       videoId,
@@ -237,11 +264,13 @@ export class StorageService implements OnApplicationShutdown {
         workerEnvironment.S3_BUCKET_STREAMS,
         `videos/${videoId}/`,
         keep,
+        signal,
       ),
       this.deletePrefix(
         workerEnvironment.S3_BUCKET_THUMBNAILS,
         `videos/${videoId}/`,
         keep,
+        signal,
       ),
     ]);
   }
@@ -251,17 +280,30 @@ export class StorageService implements OnApplicationShutdown {
     objectKey: string,
     sourcePath: string,
     contentType: string,
+    signal?: AbortSignal,
   ): Promise<bigint> {
+    signal?.throwIfAborted();
     const file = await stat(sourcePath);
-    await this.client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: objectKey,
-        Body: createReadStream(sourcePath),
-        ContentLength: file.size,
-        ContentType: contentType,
-      }),
-    );
+    const body = createReadStream(sourcePath);
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: objectKey,
+          Body: body,
+          ContentLength: file.size,
+          ContentType: contentType,
+        }),
+        { abortSignal: signal },
+      );
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      throw error;
+    } finally {
+      // The SDK does not own the stream: release the file handle even when the
+      // request was cancelled mid-transfer.
+      body.destroy();
+    }
     return BigInt(file.size);
   }
 
@@ -269,15 +311,32 @@ export class StorageService implements OnApplicationShutdown {
     bucket: string,
     prefix: string,
     keepPrefix?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.deletePrefixPages(bucket, prefix, keepPrefix, signal);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      throw error;
+    }
+  }
+
+  private async deletePrefixPages(
+    bucket: string,
+    prefix: string,
+    keepPrefix?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     let continuationToken: string | undefined;
     do {
+      signal?.throwIfAborted();
       const page = await this.client.send(
         new ListObjectsV2Command({
           Bucket: bucket,
           Prefix: prefix,
           ContinuationToken: continuationToken,
         }),
+        { abortSignal: signal },
       );
       const objects =
         page.Contents?.flatMap((object) =>
@@ -291,6 +350,7 @@ export class StorageService implements OnApplicationShutdown {
             Bucket: bucket,
             Delete: { Objects: objects, Quiet: true },
           }),
+          { abortSignal: signal },
         );
         if (result.Errors?.length) {
           this.logger.error({

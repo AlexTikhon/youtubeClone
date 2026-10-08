@@ -15,13 +15,16 @@ import { selectRenditions, type GeneratedRendition } from './hls-renditions.js';
 import { MediaToolsService } from './media-tools.service.js';
 import {
   AttemptBusyError,
+  AttemptLeaseExpiredError,
   AttemptOwnershipLostError,
   asProcessingError,
 } from './processing-error.js';
 import {
   AttemptLease,
+  PUBLISH_TRANSACTION_OPTIONS,
   acquireAttempt,
   failStrandedGeneration,
+  publishReadyIfOwned,
   releaseAttempt,
   type AttemptRef,
 } from './processing-lease.js';
@@ -31,6 +34,10 @@ export interface PipelineOptions {
   leaseSeconds?: number;
   renewIntervalMs?: number;
   attemptMaxMs?: number;
+  /** Upper bound for cleanup work, which runs after the attempt is cancelled. */
+  cleanupTimeoutMs?: number;
+  /** Parent of the per-attempt temporary directories. */
+  workRoot?: string;
 }
 
 export const PIPELINE_OPTIONS = Symbol('PIPELINE_OPTIONS');
@@ -41,6 +48,8 @@ export class VideoProcessingPipeline {
   private readonly leaseSeconds: number;
   private readonly renewIntervalMs: number;
   private readonly attemptMaxMs: number;
+  private readonly cleanupTimeoutMs: number;
+  private readonly workRoot: string;
 
   constructor(
     @Inject(DatabaseService) private readonly database: DatabaseService,
@@ -56,12 +65,21 @@ export class VideoProcessingPipeline {
     this.attemptMaxMs =
       options.attemptMaxMs ??
       workerEnvironment.WORKER_ATTEMPT_MAX_SECONDS * 1_000;
+    this.cleanupTimeoutMs =
+      options.cleanupTimeoutMs ??
+      workerEnvironment.WORKER_CLEANUP_TIMEOUT_SECONDS * 1_000;
+    this.workRoot = options.workRoot ?? tmpdir();
   }
 
+  /**
+   * Runs one attempt. `shutdownSignal` is the worker's: aborting it cancels the
+   * attempt's work, after which the execution settles with a retryable error.
+   */
   async execute(
     jobId: string,
     input: ProcessVideoJob,
     bullAttempt = 1,
+    shutdownSignal?: AbortSignal,
   ): Promise<void> {
     const video = await this.database.video.findUnique({
       where: { id: input.videoId },
@@ -115,6 +133,7 @@ export class VideoProcessingPipeline {
     if (video.status === 'UPLOADED')
       assertVideoTransition(video.status, 'PROCESSING');
 
+    const acquiredAt = performance.now();
     const attemptId = await acquireAttempt(this.database, {
       videoId: video.id,
       generation: input.generation,
@@ -134,34 +153,45 @@ export class VideoProcessingPipeline {
       leaseSeconds: this.leaseSeconds,
       renewIntervalMs: this.renewIntervalMs,
       maxDurationMs: this.attemptMaxMs,
+      acquiredAt,
+      shutdownSignal,
     });
-    lease.start();
     const attemptContext = { ...logContext, attemptId };
-    this.logger.log({
-      event: 'video.processing.started',
-      ...attemptContext,
-    });
+    const { signal } = lease;
 
+    // Everything from here on is covered by the try/finally: the attempt owns
+    // the generation now, so any failure must stop the heartbeat, clean up,
+    // and surface an attempt-tagged error for the caller to release or fail.
     let committed = false;
-    const workDirectory = await mkdtemp(
-      join(tmpdir(), `youtube-clone-${video.id}-`),
-    );
-    const originalPath = join(workDirectory, 'original');
-    const thumbnailPath = join(workDirectory, 'thumbnail.jpg');
-    const hlsDirectory = join(workDirectory, 'hls');
+    let workDirectory: string | undefined;
     try {
+      lease.start();
+      this.logger.log({
+        event: 'video.processing.started',
+        ...attemptContext,
+      });
+      signal.throwIfAborted();
+      workDirectory = await mkdtemp(
+        join(this.workRoot, `youtube-clone-${video.id}-`),
+      );
+      signal.throwIfAborted();
+      const originalPath = join(workDirectory, 'original');
+      const thumbnailPath = join(workDirectory, 'thumbnail.jpg');
+      const hlsDirectory = join(workDirectory, 'hls');
       const original = video.assets[0]!;
       await this.storage.download(
         original.bucket,
         original.objectKey,
         originalPath,
         original.sizeBytes,
+        signal,
       );
-      const metadata = await this.mediaTools.probe(originalPath);
+      const metadata = await this.mediaTools.probe(originalPath, signal);
       const thumbnailSize = await this.mediaTools.generateThumbnail(
         originalPath,
         thumbnailPath,
         metadata,
+        signal,
       );
       const renditionSpecs = selectRenditions({
         sourceWidth: metadata.width,
@@ -170,6 +200,7 @@ export class VideoProcessingPipeline {
       });
       const generatedRenditions: GeneratedRendition[] = [];
       for (const spec of renditionSpecs) {
+        signal.throwIfAborted();
         const startedAt = performance.now();
         this.logger.log({
           event: 'video.processing.rendition.started',
@@ -180,6 +211,7 @@ export class VideoProcessingPipeline {
           originalPath,
           hlsDirectory,
           spec,
+          signal,
         );
         generatedRenditions.push(generated);
         this.logger.log({
@@ -189,6 +221,7 @@ export class VideoProcessingPipeline {
           durationMs: Math.round(performance.now() - startedAt),
         });
       }
+      signal.throwIfAborted();
       const masterStartedAt = performance.now();
       await this.mediaTools.generateHlsMaster(
         hlsDirectory,
@@ -210,6 +243,7 @@ export class VideoProcessingPipeline {
         input.generation,
         attemptId,
         thumbnailPath,
+        signal,
       );
       const hls = await this.storage.uploadHls(
         video.id,
@@ -217,6 +251,7 @@ export class VideoProcessingPipeline {
         attemptId,
         hlsDirectory,
         renditionSpecs.map((spec) => spec.name),
+        signal,
       );
       await lease.ensureOwned();
 
@@ -254,26 +289,12 @@ export class VideoProcessingPipeline {
       // atomically with it or not at all.
       await this.database.$transaction(async (transaction) => {
         assertVideoTransition('PROCESSING', 'READY');
-        const completed = await transaction.video.updateMany({
-          where: {
-            id: video.id,
-            status: 'PROCESSING',
-            processingGeneration: input.generation,
-            processingAttemptId: attemptId,
-          },
-          data: {
-            status: 'READY',
-            durationSeconds: Math.round(metadata.durationSeconds),
-            width: metadata.width,
-            height: metadata.height,
-            failureReason: null,
-            processingFinishedAt: new Date(),
-            committedAttemptId: attemptId,
-            processingAttemptId: null,
-            processingLeaseExpiresAt: null,
-          },
+        const completed = await publishReadyIfOwned(transaction, attempt, {
+          durationSeconds: Math.round(metadata.durationSeconds),
+          width: metadata.width,
+          height: metadata.height,
         });
-        if (completed.count !== 1) throw new AttemptOwnershipLostError();
+        if (!completed) throw new AttemptOwnershipLostError();
         await transaction.videoAsset.update({
           where: { id: original.id },
           data: {
@@ -334,7 +355,7 @@ export class VideoProcessingPipeline {
           },
           data: { publishedAt: new Date() },
         });
-      });
+      }, PUBLISH_TRANSACTION_OPTIONS);
       committed = true;
       await this.removeObsolete(attempt, attemptContext);
       this.logger.log({
@@ -345,7 +366,9 @@ export class VideoProcessingPipeline {
         height: metadata.height,
         renditionCount: generatedRenditions.length,
       });
-    } catch (error) {
+    } catch (thrown) {
+      // Cancellation outranks whatever the interrupted operation reported.
+      const error: unknown = signal.aborted ? signal.reason : thrown;
       const outcome = await this.classifyFailure(
         attempt,
         error,
@@ -360,8 +383,27 @@ export class VideoProcessingPipeline {
       throw this.tag(outcome, attemptId);
     } finally {
       lease.stop();
-      if (!committed) await this.cleanupUnpublished(attempt);
-      await rm(workDirectory, { recursive: true, force: true });
+      try {
+        if (!committed) await this.cleanupUnpublished(attempt);
+      } finally {
+        if (workDirectory) await this.removeWorkDirectory(workDirectory);
+      }
+    }
+  }
+
+  private async removeWorkDirectory(directory: string): Promise<void> {
+    try {
+      await rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
+    } catch (error) {
+      this.logger.warn({
+        event: 'video.processing.workdir_cleanup_failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -532,8 +574,19 @@ export class VideoProcessingPipeline {
     const ownsStill =
       current.status === 'PROCESSING' &&
       current.processingAttemptId === attempt.attemptId;
-    if (ownsStill && !(error instanceof AttemptOwnershipLostError))
+    if (ownsStill) {
+      // Still the recorded owner although the attempt thinks it lost
+      // ownership: nobody superseded it, its lease simply ran out. That is an
+      // interruption to retry, not a verdict of another attempt.
+      if (error instanceof AttemptOwnershipLostError) {
+        this.logger.warn({
+          event: 'video.processing.lease_expired',
+          ...logContext,
+        });
+        return new AttemptLeaseExpiredError();
+      }
       return error;
+    }
     this.logger.warn({
       event: 'video.processing.ownership_lost',
       ...logContext,
@@ -560,6 +613,7 @@ export class VideoProcessingPipeline {
         attempt.videoId,
         attempt.generation,
         attempt.attemptId,
+        AbortSignal.timeout(this.cleanupTimeoutMs),
       );
     } catch (error) {
       this.logger.warn({
@@ -581,6 +635,7 @@ export class VideoProcessingPipeline {
         attempt.videoId,
         attempt.generation,
         attempt.attemptId,
+        AbortSignal.timeout(this.cleanupTimeoutMs),
       );
     } catch (error) {
       this.logger.warn({

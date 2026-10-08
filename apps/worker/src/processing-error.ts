@@ -41,6 +41,46 @@ export class AttemptOwnershipLostError extends ProcessingError {
   }
 }
 
+/**
+ * The attempt's lease ran out while it still was the recorded owner (a stalled
+ * heartbeat, an unreachable database, or a slow publication). Nobody superseded
+ * it, so unlike ownership loss this is a retryable interruption.
+ */
+export class AttemptLeaseExpiredError extends ProcessingError {
+  constructor() {
+    super(
+      'The processing attempt lease expired before the work completed',
+      true,
+      'Video processing was interrupted',
+    );
+    this.name = 'AttemptLeaseExpiredError';
+  }
+}
+
+/** The attempt reached its hard time limit and its work was cancelled. */
+export class AttemptDeadlineError extends ProcessingError {
+  constructor() {
+    super(
+      'The processing attempt exceeded its maximum duration',
+      true,
+      'Video processing timed out',
+    );
+    this.name = 'AttemptDeadlineError';
+  }
+}
+
+/** The worker is shutting down and cancelled this attempt's work. */
+export class WorkerShutdownError extends ProcessingError {
+  constructor() {
+    super(
+      'The worker is shutting down; the processing attempt was cancelled',
+      true,
+      'Video processing was interrupted by a worker restart',
+    );
+    this.name = 'WorkerShutdownError';
+  }
+}
+
 export function asProcessingError(error: unknown): ProcessingError {
   return error instanceof ProcessingError
     ? error
